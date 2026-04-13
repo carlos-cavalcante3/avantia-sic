@@ -10,8 +10,10 @@ etl_project/
 │   └── processed/
 ├── logs/
 ├── src/
-│   └── etl_project/
-├── tests/
+│   ├── extract.py
+│   ├── transform.py
+│   ├── load.py
+│   └── pipeline.py
 ├── .env
 ├── .gitignore
 ├── README.md
