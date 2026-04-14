@@ -1,191 +1,177 @@
-import requests
 import os
+import json
 import time
-from typing import Dict, Any, List
+import logging
+import requests
+from datetime import datetime
 from dotenv import load_dotenv, set_key
 
-ENV_PATH = ".env"
-
+CAMINHO_ENV = ".env"
 
 class Extract:
     """
-    Classe responsável por extrair dados da API do RD Station CRM.
-    Gerencia a autenticação, renovação de tokens, controle de taxa e paginação.
+    Classe responsável por extrair dados da API do RD Station CRM V2.
+    Gerencia autenticação OAuth (com renovação automática no .env), 
+    sessões persistentes, controle de taxa, correção de rotas e paginação.
     """
-
     def __init__(self):
-        """
-        Carrega as variáveis de ambiente e inicializa as configurações da API.
-        """
-        load_dotenv(ENV_PATH)
+        load_dotenv(CAMINHO_ENV, override=True)
 
-        self.base_url = "https://api.rd.services/crm/v2"
+        self.url_base = "https://api.rd.services/crm/v2"
+        
+        self.token_acesso = os.getenv("RD_ACCESS_TOKEN")
+        self.token_atualizacao = os.getenv("RD_REFRESH_TOKEN")
+        self.id_cliente = os.getenv("RD_CLIENT_ID")
+        self.segredo_cliente = os.getenv("RD_CLIENT_SECRET")
 
-        self.access_token = os.getenv("RD_ACCESS_TOKEN")
-        self.refresh_token = os.getenv("RD_REFRESH_TOKEN")
-        self.client_id = os.getenv("RD_CLIENT_ID")
-        self.client_secret = os.getenv("RD_CLIENT_SECRET")
+        self.criacao_token = time.time()
+        self.expiracao_token = 3600
 
-        self.token_created_at = time.time()
-        self.token_expires_in = 3600
+        self.sessao = requests.Session()
+        self._configurar_cabecalhos()
 
-        self.session = requests.Session()
-        self._set_headers()
+        self.intervalo_requisicao = 0.6  
+        self.max_tentativas = 5
 
-        self.request_interval = 0.6  
-        self.max_retries = 5
+        self.diretorio_backup = "data/raw"
+        os.makedirs(self.diretorio_backup, exist_ok=True)
+        self.logger = logging.getLogger("Extract")
 
-        self.endpoints = [
-            "deals",
-            "contacts",
-            "organizations",
-            "users",
-            "tasks",
-            "pipelines",
-        ]
+    def _configurar_cabecalhos(self):
+        self.sessao.headers.update({
+            "Authorization": f"Bearer {self.token_acesso}",
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        })
 
-    def _set_headers(self) -> None:
-        """Configura os cabeçalhos padrão da sessão HTTP."""
-        self.session.headers.update(
-            {
-                "Authorization": f"Bearer {self.access_token}",
-                "Accept": "application/json",
-            }
-        )
+    def _token_expirado(self):
+        return (time.time() - self.criacao_token) > (self.expiracao_token - 60)
 
-    def _token_expired(self) -> bool:
-        """Verifica se o token de acesso expirou ou está prestes a expirar."""
-        return (time.time() - self.token_created_at) > (self.token_expires_in - 60)
+    def _atualizar_env(self):
+        set_key(CAMINHO_ENV, "RD_ACCESS_TOKEN", self.token_acesso)
+        set_key(CAMINHO_ENV, "RD_REFRESH_TOKEN", self.token_atualizacao)
 
-    def _update_env(self) -> None:
-        """Atualiza o arquivo .env com os novos tokens gerados."""
-        set_key(ENV_PATH, "RD_ACCESS_TOKEN", self.access_token)
-        set_key(ENV_PATH, "RD_REFRESH_TOKEN", self.refresh_token)
-
-    def _refresh_token(self) -> None:
-        """
-        Solicita um novo par de tokens de acesso e atualização à API.
-        """
-        print("[AUTH] Refresh token")
+    def _renovar_token(self):
+        self.logger.info("Token expirado (ou 401). Solicitando renovação automática...")
         url = "https://api.rd.services/auth/token"
 
-        payload = {
+        carga = {
             "grant_type": "refresh_token",
-            "refresh_token": self.refresh_token,
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
+            "refresh_token": self.token_atualizacao,
+            "client_id": self.id_cliente,
+            "client_secret": self.segredo_cliente,
         }
 
-        response = requests.post(url, data=payload)
+        resposta = requests.post(url, data=carga)
 
-        if response.status_code == 200:
-            tokens = response.json()
-            self.access_token = tokens["access_token"]
-            self.refresh_token = tokens["refresh_token"]
-            self.token_created_at = time.time()
+        if resposta.status_code == 200:
+            tokens = resposta.json()
+            self.token_acesso = tokens["access_token"]
+            self.token_atualizacao = tokens["refresh_token"]
+            self.criacao_token = time.time()
 
-            self._set_headers()
-            self._update_env()
+            self._configurar_cabecalhos()
+            self._atualizar_env()
+            self.logger.info("Token de acesso atualizado")
         else:
-            raise Exception(f"Erro ao renovar token: {response.text}")
+            self.logger.critical(f"Falha irreversível ao renovar token: {resposta.text}")
+            raise Exception(f"Erro ao renovar token: {resposta.text}")
 
-    def _fix_url(self, url: str) -> str:
-        """Ajusta a URL de paginação caso a API retorne um caminho incorreto."""
+    def testar_conexao(self):
+        self.logger.info("Teste de autenticação com API ")
+        try:
+            if self._token_expirado():
+                self._renovar_token()
+                
+            url = f"{self.url_base}/users"
+            resposta = self.sessao.get(url, params={"page[size]": 1}, timeout=15)
+            
+            if resposta.status_code == 401:
+                self._renovar_token()
+                resposta = self.sessao.get(url, params={"page[size]": 1}, timeout=15)
+                
+            resposta.raise_for_status()
+            self.logger.info("Conexão com RD Station V2 estabelecida")
+            return True
+            
+        except Exception as erro:
+            self.logger.error(f"Falha de conexão com RD Station: {erro}")
+            return False
+
+    def _corrigir_url(self, url):
         if "/api/v2/" in url:
             return url.replace("/api/v2/", "/crm/v2/")
         return url
 
-    def _request_with_retry(self, url: str) -> Dict[str, Any]:
-        """
-        Executa uma requisição GET com controle de limite de taxa e tentativas automáticas.
-
-        Args:
-            url (str): O endpoint a ser consultado.
-
-        Returns:
-            Dict[str, Any]: A resposta JSON da requisição.
-        """
-        for attempt in range(self.max_retries):
+    def _fazer_requisicao(self, url):
+        for tentativa in range(self.max_tentativas):
             try:
-                if self._token_expired():
-                    self._refresh_token()
+                if self._token_expirado():
+                    self._renovar_token()
 
-                response = self.session.get(url)
+                resposta = self.sessao.get(url)
 
-                if response.status_code == 429:
-                    wait = 2 ** attempt
-                    print(f"[RATE LIMIT] Esperando {wait}s...")
-                    time.sleep(wait)
+                if resposta.status_code == 429:
+                    espera = 2 ** tentativa
+                    self.logger.warning(f"Rate Limit 429. Aguardando {espera}s...")
+                    time.sleep(espera)
                     continue
 
-                if response.status_code >= 500:
-                    wait = 2 ** attempt
-                    print(f"[SERVER ERROR] Retry em {wait}s...")
-                    time.sleep(wait)
+                if resposta.status_code >= 500:
+                    espera = 2 ** tentativa
+                    self.logger.warning(f"Erro no Servidor {resposta.status_code}. Aguardando {espera}s")
+                    time.sleep(espera)
                     continue
 
-                if response.status_code == 401:
-                    self._refresh_token()
+                if resposta.status_code == 401:
+                    self._renovar_token()
                     continue
 
-                response.raise_for_status()
+                resposta.raise_for_status()
 
-                time.sleep(self.request_interval)
-                return response.json()
+                time.sleep(self.intervalo_requisicao)
+                return resposta.json()
 
             except requests.exceptions.RequestException as e:
-                wait = 2 ** attempt
-                print(f"[ERRO] {e} | retry em {wait}s")
-                time.sleep(wait)
+                espera = 2 ** tentativa
+                self.logger.warning(f"Falha de rede: {e}. Aguardando {espera}s")
+                time.sleep(espera)
 
-        raise Exception(f"Falha após {self.max_retries} tentativas")
+        raise Exception(f"Falha na requisição para {url} após {self.max_tentativas} tentativas.")
 
-    def _fetch_all_pages(self, endpoint: str) -> List[Dict[str, Any]]:
-        """
-        Percorre todas as páginas de um endpoint específico.
-
-        Args:
-            endpoint (str): O nome da entidade a ser consultada.
-
-        Returns:
-            List[Dict[str, Any]]: Lista contendo todos os registros extraídos.
-        """
-        print(f"[EXTRACT] {endpoint}")
-        url = f"{self.base_url}/{endpoint}"
-        all_data = []
-        page = 1
+    def extrair_endpoint(self, nome_endpoint):
+        self.logger.info(f"[{nome_endpoint}] Iniciando extração")
+        url = f"{self.url_base}/{nome_endpoint}?page[size]=100"
+        
+        dados_completos = []
+        pagina = 1
 
         while url:
-            data = self._request_with_retry(url)
-            items = data.get("data", [])
-            all_data.extend(items)
+            dados_pagina = self._fazer_requisicao(url)
+            elementos = dados_pagina.get("data", [])
+            dados_completos.extend(elementos)
 
-            print(f"  página {page} -> {len(items)} registros")
-            next_url = data.get("links", {}).get("next")
+            self.logger.info(f"[{nome_endpoint}] Lote {pagina} concluído -> Total baixado: {len(dados_completos)} registros")
 
-            if next_url:
-                url = self._fix_url(next_url)
-                page += 1
+            proxima_url = dados_pagina.get("links", {}).get("next")
+            
+            if proxima_url:
+                url = self._corrigir_url(proxima_url)
+                pagina += 1
             else:
                 url = None
 
-        print(f"  -> TOTAL: {len(all_data)} registros")
-        return all_data
+        if dados_completos:
+            self._salvar_backup(nome_endpoint, dados_completos)
 
-    def fetch_all(self) -> Dict[str, Any]:
-        """
-        Orquestra a extração de dados de todos os endpoints configurados.
+        return dados_completos
 
-        Returns:
-            Dict[str, Any]: Um dicionário onde as chaves são os endpoints e os valores são listas de registros.
-        """
-        data = {}
+    def _salvar_backup(self, nome_endpoint, dados):
+        data_hora = datetime.now().strftime("%Y%m%d_%H%M%S")
+        nome_arquivo = f"{nome_endpoint}_{data_hora}.json"
+        caminho_arquivo = os.path.join(self.diretorio_backup, nome_arquivo)
 
-        for endpoint in self.endpoints:
-            try:
-                data[endpoint] = self._fetch_all_pages(endpoint)
-            except Exception as e:
-                print(f"[ERRO EXTRACT] {endpoint}: {e}")
-                data[endpoint] = []
-
-        return data
+        with open(caminho_arquivo, "w", encoding="utf-8") as arquivo:
+            json.dump(dados, arquivo, ensure_ascii=False, indent=2)
+        
+        self.logger.info(f"[{nome_endpoint}] Backup salvo em: {caminho_arquivo}")
