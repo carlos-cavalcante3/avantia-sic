@@ -1,52 +1,93 @@
-from typing import Dict, Any, List
+import logging
 
 class Transform:
-    def __init__(self):
+    """
+    Classe responsável por adequar os dados brutos ao schema do banco destino.
+    Aplica deduplicação inteligente (Merge/Coalesce) por ID para evitar conflitos
+    de transação preservando o máximo de dados não-nulos.
+    """
+    def __init__(self, esquemas_tabelas):
+        self.esquemas_tabelas = esquemas_tabelas
+        self.logger = logging.getLogger("Transform")
+
+    def preparar_dados(self, nome_endpoint, dados_brutos):
+        self.logger.info(f"[{nome_endpoint}] Iniciando transformação de {len(dados_brutos)} registros...")
         
-        self.allowed_columns = {
-            "deals": ["id", "name", "status", "total_price", "recurrence_price", "one_time_price", "expected_close_date", "closed_at", "created_at", "updated_at", "proposta_entregue", "organization_id", "owner_id", "pipeline_id", "stage_id", "source_id"],
-            "contacts": ["id", "name", "job_title", "organization_id"],
-            "organizations": ["id", "name", "cnpj", "razao_social", "cidade", "estado"],
-            "users": ["id", "name"],
-            "tasks": ["id", "name", "deal_id", "owner_id", "due_date", "completed_at", "updated_at"],
-            "pipelines": ["id", "name"]
-        }
+        colunas_esperadas = self.esquemas_tabelas.get(nome_endpoint, [])
+        registros_unicos = {}
 
-    def _safe_get(self, obj: Any, key: str) -> Any:
-        if isinstance(obj, dict):
-            return obj.get(key)
-        return None
+        for registro in dados_brutos:
+            
+            if nome_endpoint == "deals":
+                registro["amount"] = registro.get("total_price")
+                registro["deal_stage_id"] = registro.get("stage_id")
+                
+                campos_custom = registro.get("custom_fields")
+                if isinstance(campos_custom, dict):
+                    registro["tipo_de_contrato"] = campos_custom.get("tipo-de-contrato")
+                    registro["proposta_entregue"] = campos_custom.get("proposta-entregue-ao-cliente")
+                    registro["audio_e_video"] = campos_custom.get("audio-e-video")
+                    registro["descricao"] = campos_custom.get("descricao")
 
-    def _filter_columns(self, entity_name: str, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        allowed = self.allowed_columns.get(entity_name, [])
-        filtered_records = []
+            elif nome_endpoint == "contacts":
+                lista_telefones = registro.get("phones")
+                if isinstance(lista_telefones, list) and len(lista_telefones) > 0:
+                    registro["phones"] = lista_telefones[0].get("phone")
+                else:
+                    registro["phones"] = None
 
-        for r in records:
-            filtered_row = {k: v for k, v in r.items() if k in allowed}
-            filtered_records.append(filtered_row)
+                lista_emails = registro.get("emails")
+                if isinstance(lista_emails, list) and len(lista_emails) > 0:
+                    registro["email"] = lista_emails[0].get("email")
+                else:
+                    registro["email"] = None
 
-        return filtered_records
+                if not registro.get("job_title"):
+                    registro["job_title"] = registro.get("title")
 
-    def transform_generic(self, entity_name: str, data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        if not isinstance(data, list):
-            return []
+            elif nome_endpoint == "organizations":
+                campos_custom = registro.get("custom_fields")
+                if isinstance(campos_custom, dict):
+                    registro["cnpj"] = registro.get("cnpj", campos_custom.get("cnpj"))
+                    registro["razao_social"] = registro.get("razao_social", campos_custom.get("razao_social"))
+                    registro["nome_fantasia"] = registro.get("nome_fantasia", campos_custom.get("nome_fantasia"))
+                    registro["cidade"] = registro.get("cidade", campos_custom.get("cidade"))
+                    registro["estado"] = registro.get("estado", campos_custom.get("estado"))
+                    registro["endereco"] = registro.get("endereco", campos_custom.get("endereco"))
+                    registro["telefone"] = registro.get("telefone", campos_custom.get("telefone"))
 
-        cleaned = []
+            registro_limpo = {}
 
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            cleaned.append(item)
+            for chave, valor in registro.items():
+                if colunas_esperadas and chave not in colunas_esperadas:
+                    continue
 
+                if chave == "id":
+                    valor_tratado = str(valor)
+                else:
+                    valor_tratado = valor
 
-        return self._filter_columns(entity_name, cleaned)
+                registro_limpo[chave] = valor_tratado
 
-    def process(self, raw_data: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
-        return {
-            "deals": self.transform_generic("deals", raw_data.get("deals")),
-            "contacts": self.transform_generic("contacts", raw_data.get("contacts")),
-            "organizations": self.transform_generic("organizations", raw_data.get("organizations")),
-            "users": self.transform_generic("users", raw_data.get("users")),
-            "tasks": self.transform_generic("tasks", raw_data.get("tasks")),
-            "pipelines": self.transform_generic("pipelines", raw_data.get("pipelines")),
-        }
+            if colunas_esperadas:
+                for coluna in colunas_esperadas:
+                    if coluna not in registro_limpo:
+                        registro_limpo[coluna] = None
+
+            id_registro = registro_limpo.get("id")
+            if id_registro:
+                if id_registro not in registros_unicos:
+                    registros_unicos[id_registro] = registro_limpo
+                else:
+                    for chave, valor_novo in registro_limpo.items():
+                        if valor_novo is not None and valor_novo != "":
+                            registros_unicos[id_registro][chave] = valor_novo
+
+        dados_transformados = list(registros_unicos.values())
+        
+        duplicatas_removidas = len(dados_brutos) - len(dados_transformados)
+        if duplicatas_removidas > 0:
+            self.logger.info(f"[{nome_endpoint}] Deduplicação: {duplicatas_removidas} conflitos mesclados para enriquecimento de dados.")
+
+        self.logger.info(f"[{nome_endpoint}] Transformação concluída. Lote final: {len(dados_transformados)} registros.")
+        return dados_transformados

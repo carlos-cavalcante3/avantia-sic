@@ -32,14 +32,14 @@ def make_request(endpoint, params=None):
         print(response.text)
         return None
     
-    print("\n=" * 50)
+    print("=" * 50)
     print("\nHEADERS:")
     print(dict(response.headers))
-    print("\n=" * 50)
+    print("=" * 50)
 
     print("\BODY:")
     print(json.dumps(data, indent=2)[:2000]) 
-    print("\n=" * 50) 
+    print("=" * 50) 
 
     return data
 

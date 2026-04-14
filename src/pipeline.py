@@ -1,40 +1,52 @@
-import os
-import json
+import logging
 from src.extract import Extract
 from src.transform import Transform
 from src.load import Load
-from datetime import datetime
 
 class Pipeline:
-    def __init__(self):
-        self.extract = Extract()
-        self.transform = Transform()
-        self.load = Load()
+    """
+    Classe que orquestra o fluxo ETL completo.
+    Realiza pre-flight checks (testes de conexão) antes de iniciar as extrações.
+    """
+    def __init__(self, url_supabase, chave_supabase, esquemas_tabelas):
+        self.extrator = Extract() # Instanciado sem parâmetros, pega tudo via .env
+        self.transformador = Transform(esquemas_tabelas)
+        self.carregador = Load(url_supabase, chave_supabase)
+        self.logger = logging.getLogger("Pipeline")
+        self.endpoints = [
+            "users", "teams", "organizations", "pipelines",
+            "contacts", "deals", "tasks"
+        ]
 
-    def _save_raw(self, raw_data: dict) -> None:
-        raw_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "raw"))
-        os.makedirs(raw_dir, exist_ok=True)
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filepath = os.path.join(raw_dir, f"rd_crm_raw_{timestamp}.json")
-
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(raw_data, f, ensure_ascii=False, indent=4)
+    def executar(self):
+        self.logger.info("=== INICIANDO PIPELINE ETL ===")
+        
+        if not self.extrator.testar_conexao():
+            self.logger.critical("Abortando pipeline devido a falha na origem (RD Station).")
+            return
             
-        print(f"[{datetime.now()}] Backup RAW salvo em: {filepath}")
+        if not self.carregador.testar_conexao():
+            self.logger.critical("Abortando pipeline devido a falha no destino (Supabase).")
+            return
 
-    def run(self) -> None:
-        print(f"\n[{datetime.now()}] Pipeline iniciado")
+        self.logger.info("Todos os sistemas operacionais. Iniciando fluxo de dados...")
 
-        raw_data = self.extract.fetch_all()
-        print(f"[{datetime.now()}] Extração concluída")
+        for endpoint in self.endpoints:
+            try:
+                self.logger.info(f"--- Processando endpoint: {endpoint.upper()} ---")
 
-        self._save_raw(raw_data)
+                dados_brutos = self.extrator.extrair_endpoint(endpoint)
+                
+                if not dados_brutos:
+                    self.logger.info(f"[{endpoint}] Nenhum dado localizado. Pulando para o próximo.")
+                    continue
 
-        transformed_data = self.transform.process(raw_data)
-        print(f"[{datetime.now()}] Transformação concluída")
+                dados_prontos = self.transformador.preparar_dados(endpoint, dados_brutos)
 
-        self.load.load_all(transformed_data)
-        print(f"[{datetime.now()}] Load concluído")
+                self.carregador.carregar_dados(endpoint, dados_prontos)
 
-        print(f"[{datetime.now()}] Finalizado\n")
+            except Exception as erro:
+                self.logger.error(f"Falha não tratada no fluxo de {endpoint}: {erro}", exc_info=True)
+                self.logger.info("Continuando com o próximo endpoint...")
+
+        self.logger.info("=== PIPELINE ETL FINALIZADA ===")
