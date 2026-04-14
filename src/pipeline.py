@@ -9,7 +9,7 @@ class Pipeline:
     Realiza pre-flight checks (testes de conexão) antes de iniciar as extrações.
     """
     def __init__(self, url_supabase, chave_supabase, esquemas_tabelas):
-        self.extrator = Extract() # Instanciado sem parâmetros, pega tudo via .env
+        self.extrator = Extract() 
         self.transformador = Transform(esquemas_tabelas)
         self.carregador = Load(url_supabase, chave_supabase)
         self.logger = logging.getLogger("Pipeline")
@@ -19,7 +19,7 @@ class Pipeline:
         ]
 
     def executar(self):
-        self.logger.info("=== INICIANDO PIPELINE ETL ===")
+        self.logger.info("PIPELINE AVANTIA-SIG INICIADA")
         
         if not self.extrator.testar_conexao():
             self.logger.critical("Abortando pipeline devido a falha na origem (RD Station).")
@@ -29,7 +29,7 @@ class Pipeline:
             self.logger.critical("Abortando pipeline devido a falha no destino (Supabase).")
             return
 
-        self.logger.info("Todos os sistemas operacionais. Iniciando fluxo de dados...")
+        self.logger.info("Todos os sistemas operacionais. Iniciando fluxo de dados")
 
         for endpoint in self.endpoints:
             try:
