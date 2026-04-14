@@ -13,7 +13,6 @@ def configurar_logs():
 
     formatacao = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     
-    # Limpa handlers anteriores para evitar logs duplicados no console
     for handler in logging.root.handlers[:]:
         logging.root.removeHandler(handler)
 
@@ -27,7 +26,6 @@ def configurar_logs():
         ]
     )
 
-    # O Segredo: Silencia a poluição do httpx (requisições do Supabase)
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 def main():
