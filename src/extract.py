@@ -1,177 +1,202 @@
 import os
-import json
 import time
 import logging
 import requests
+import pandas as pd
 from datetime import datetime
-from dotenv import load_dotenv, set_key
-
-CAMINHO_ENV = ".env"
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from dotenv import set_key
+from typing import List, Dict, Any
 
 class Extract:
     """
-    Classe responsável por extrair dados da API do RD Station CRM V2.
-    Gerencia autenticação OAuth (com renovação automática no .env), 
-    sessões persistentes, controle de taxa, correção de rotas e paginação.
+    Extrai dados da API do RD Station CRM utilizando a base oficial /crm/v2.
+    Implementa tratamento de rate limit, renovacao inteligente de tokens, 
+    paginacao robusta exclusiva com page[size] e links.next, prevenindo loops 
+    infinitos e armazenando o raw data em CSV na camada correta.
     """
-    def __init__(self):
-        load_dotenv(CAMINHO_ENV, override=True)
 
-        self.url_base = "https://api.rd.services/crm/v2"
+    def __init__(self) -> None:
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.urlBase = "https://api.rd.services/crm/v2"
+        self.urlAutenticacao = "https://api.rd.services/auth/token"
         
-        self.token_acesso = os.getenv("RD_ACCESS_TOKEN")
-        self.token_atualizacao = os.getenv("RD_REFRESH_TOKEN")
-        self.id_cliente = os.getenv("RD_CLIENT_ID")
-        self.segredo_cliente = os.getenv("RD_CLIENT_SECRET")
+        self.tokenAcesso = os.environ.get("RD_ACCESS_TOKEN")
+        self.tokenRenovacao = os.environ.get("RD_REFRESH_TOKEN")
+        self.identificadorCliente = os.environ.get("RD_CLIENT_ID")
+        self.segredoCliente = os.environ.get("RD_CLIENT_SECRET")
+        self.caminhoArquivoAmbiente = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+        
+        self.sessaoHttp = self.criarSessaoResiliente()
+        self.renovacaoRealizada = False
 
-        self.criacao_token = time.time()
-        self.expiracao_token = 3600
+    def criarSessaoResiliente(self) -> requests.Session:
+        sessaoResiliente = requests.Session()
+        estrategiaTentativas = Retry(
+            total=4,
+            backoff_factor=2,
+            status_forcelist=[500, 502, 503, 504],
+            allowed_methods=["GET", "POST"]
+        )
+        adaptadorHttp = HTTPAdapter(max_retries=estrategiaTentativas)
+        sessaoResiliente.mount("http://", adaptadorHttp)
+        sessaoResiliente.mount("https://", adaptadorHttp)
+        return sessaoResiliente
 
-        self.sessao = requests.Session()
-        self._configurar_cabecalhos()
+    def salvarArquivoRaw(self, dados: List[Dict[str, Any]], nomeRecurso: str) -> None:
+        """
+        Gera o arquivo CSV na camada data/raw/ com a nomenclatura exigida,
+        salvaguardando a informacao bruta extraida da API.
+        """
+        caminhoDiretorio = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "raw")
+        os.makedirs(caminhoDiretorio, exist_ok=True)
+        
+        dataHoraFormatada = datetime.now().strftime("%d-%m-%Y_%H%M%S")
+        caminhoArquivo = os.path.join(caminhoDiretorio, f"{nomeRecurso}_{dataHoraFormatada}.csv")
+        
+        try:
+            tabelaDadosRaw = pd.DataFrame(dados)
+            tabelaDadosRaw.to_csv(caminhoArquivo, index=False, encoding="utf-8")
+            self.logger.info(f"Arquivo raw salvo com sucesso em {caminhoArquivo}")
+        except Exception as erroBackup:
+            self.logger.error(f"Falha ao gerar arquivo raw para {nomeRecurso}: {str(erroBackup)}")
 
-        self.intervalo_requisicao = 0.6  
-        self.max_tentativas = 5
+    def renovarTokenAcesso(self) -> None:
+        self.logger.info("Iniciando solicitacao de renovacao do token de acesso")
+        
+        cargaDadosAutenticacao = {
+            "client_id": self.identificadorCliente,
+            "client_secret": self.segredoCliente,
+            "refresh_token": self.tokenRenovacao,
+            "grant_type": "refresh_token"
+        }
+        
+        respostaHttp = self.sessaoHttp.post(self.urlAutenticacao, json=cargaDadosAutenticacao)
+        
+        if respostaHttp.status_code == 200:
+            dadosResposta = respostaHttp.json()
+            self.tokenAcesso = dadosResposta.get("access_token")
+            self.tokenRenovacao = dadosResposta.get("refresh_token", self.tokenRenovacao)
+            
+            set_key(self.caminhoArquivoAmbiente, "RD_ACCESS_TOKEN", self.tokenAcesso)
+            set_key(self.caminhoArquivoAmbiente, "RD_REFRESH_TOKEN", self.tokenRenovacao)
+            
+            self.logger.info("Token de acesso renovado, arquivos atualizados e persistidos com sucesso.")
+            self.renovacaoRealizada = True
+        elif respostaHttp.status_code in [400, 401]:
+            mensagemErro = f"REFRESH_TOKEN INVALIDO ou expirado (Status {respostaHttp.status_code}). Gere um novo token manualmente."
+            self.logger.critical(mensagemErro)
+            raise Exception(mensagemErro)
+        else:
+            mensagemErro = f"Falha na API de autenticacao. Status: {respostaHttp.status_code} - {respostaHttp.text}"
+            self.logger.error(mensagemErro)
+            raise Exception(mensagemErro)
 
-        self.diretorio_backup = "data/raw"
-        os.makedirs(self.diretorio_backup, exist_ok=True)
-        self.logger = logging.getLogger("Extract")
-
-    def _configurar_cabecalhos(self):
-        self.sessao.headers.update({
-            "Authorization": f"Bearer {self.token_acesso}",
+    def obterCabecalhos(self) -> Dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.tokenAcesso}",
             "Accept": "application/json",
             "Content-Type": "application/json"
-        })
-
-    def _token_expirado(self):
-        return (time.time() - self.criacao_token) > (self.expiracao_token - 60)
-
-    def _atualizar_env(self):
-        set_key(CAMINHO_ENV, "RD_ACCESS_TOKEN", self.token_acesso)
-        set_key(CAMINHO_ENV, "RD_REFRESH_TOKEN", self.token_atualizacao)
-
-    def _renovar_token(self):
-        self.logger.info("Token expirado (ou 401). Solicitando renovação automática...")
-        url = "https://api.rd.services/auth/token"
-
-        carga = {
-            "grant_type": "refresh_token",
-            "refresh_token": self.token_atualizacao,
-            "client_id": self.id_cliente,
-            "client_secret": self.segredo_cliente,
         }
 
-        resposta = requests.post(url, data=carga)
+    def corrigirUrlPaginacao(self, urlOriginal: str) -> str:
+        if not urlOriginal:
+            return ""
+        urlCorrigida = urlOriginal.replace("https://api.rd.services/api/v2/", "https://api.rd.services/crm/v2/")
+        urlCorrigida = urlCorrigida.replace("https://api.rd.services/v2/", "https://api.rd.services/crm/v2/")
+        urlCorrigida = urlCorrigida.replace("http://api.rd.services/crm/v2/", "https://api.rd.services/crm/v2/")
+        return urlCorrigida
 
-        if resposta.status_code == 200:
-            tokens = resposta.json()
-            self.token_acesso = tokens["access_token"]
-            self.token_atualizacao = tokens["refresh_token"]
-            self.criacao_token = time.time()
+    def extrairProximaUrl(self, cargaDados: Any) -> str:
+        if isinstance(cargaDados, dict):
+            if "links" in cargaDados and isinstance(cargaDados["links"], dict):
+                linkProximo = cargaDados["links"].get("next", "")
+                if isinstance(linkProximo, dict):
+                    return linkProximo.get("href", "")
+                if isinstance(linkProximo, str):
+                    return linkProximo
+        return ""
 
-            self._configurar_cabecalhos()
-            self._atualizar_env()
-            self.logger.info("Token de acesso atualizado")
-        else:
-            self.logger.critical(f"Falha irreversível ao renovar token: {resposta.text}")
-            raise Exception(f"Erro ao renovar token: {resposta.text}")
+    def extrairDadosJson(self, cargaDados: Any, nomeRecurso: str) -> List[Dict[str, Any]]:
+        if isinstance(cargaDados, list):
+            return cargaDados
+        if isinstance(cargaDados, dict):
+            if nomeRecurso in cargaDados:
+                return cargaDados[nomeRecurso]
+            if "data" in cargaDados:
+                return cargaDados["data"]
+            if "items" in cargaDados:
+                return cargaDados["items"]
+        return []
 
-    def testar_conexao(self):
-        self.logger.info("Teste de autenticação com API ")
-        try:
-            if self._token_expirado():
-                self._renovar_token()
-                
-            url = f"{self.url_base}/users"
-            resposta = self.sessao.get(url, params={"page[size]": 1}, timeout=15)
-            
-            if resposta.status_code == 401:
-                self._renovar_token()
-                resposta = self.sessao.get(url, params={"page[size]": 1}, timeout=15)
-                
-            resposta.raise_for_status()
-            self.logger.info("Conexão com RD Station V2 estabelecida")
-            return True
-            
-        except Exception as erro:
-            self.logger.error(f"Falha de conexão com RD Station: {erro}")
-            return False
-
-    def _corrigir_url(self, url):
-        if "/api/v2/" in url:
-            return url.replace("/api/v2/", "/crm/v2/")
-        return url
-
-    def _fazer_requisicao(self, url):
-        for tentativa in range(self.max_tentativas):
-            try:
-                if self._token_expirado():
-                    self._renovar_token()
-
-                resposta = self.sessao.get(url)
-
-                if resposta.status_code == 429:
-                    espera = 2 ** tentativa
-                    self.logger.warning(f"Rate Limit 429. Aguardando {espera}s...")
-                    time.sleep(espera)
-                    continue
-
-                if resposta.status_code >= 500:
-                    espera = 2 ** tentativa
-                    self.logger.warning(f"Erro no Servidor {resposta.status_code}. Aguardando {espera}s")
-                    time.sleep(espera)
-                    continue
-
-                if resposta.status_code == 401:
-                    self._renovar_token()
-                    continue
-
-                resposta.raise_for_status()
-
-                time.sleep(self.intervalo_requisicao)
-                return resposta.json()
-
-            except requests.exceptions.RequestException as e:
-                espera = 2 ** tentativa
-                self.logger.warning(f"Falha de rede: {e}. Aguardando {espera}s")
-                time.sleep(espera)
-
-        raise Exception(f"Falha na requisição para {url} após {self.max_tentativas} tentativas.")
-
-    def extrair_endpoint(self, nome_endpoint):
-        self.logger.info(f"[{nome_endpoint}] Iniciando extração")
-        url = f"{self.url_base}/{nome_endpoint}?page[size]=100"
+    def extrairRecurso(self, nomeRecurso: str) -> List[Dict[str, Any]]:
+        self.logger.info(f"Iniciando extracao na base CRM V2 para o recurso: {nomeRecurso}")
         
-        dados_completos = []
-        pagina = 1
-
-        while url:
-            dados_pagina = self._fazer_requisicao(url)
-            elementos = dados_pagina.get("data", [])
-            dados_completos.extend(elementos)
-
-            self.logger.info(f"[{nome_endpoint}] Lote {pagina} concluído -> Total baixado: {len(dados_completos)} registros")
-
-            proxima_url = dados_pagina.get("links", {}).get("next")
+        todosRegistros = []
+        urlRequisicao = f"{self.urlBase}/{nomeRecurso}?page[size]=100"
+        possuiMaisPaginas = True
+        urlsVisitadas = set()
+        
+        while possuiMaisPaginas and urlRequisicao:
+            if urlRequisicao in urlsVisitadas:
+                self.logger.warning(f"Loop infinito evitado. A URL ja foi processada anteriormente: {urlRequisicao}")
+                break
+                
+            urlsVisitadas.add(urlRequisicao)
+            self.logger.info(f"Requisitando {urlRequisicao}")
             
-            if proxima_url:
-                url = self._corrigir_url(proxima_url)
-                pagina += 1
+            respostaHttp = self.sessaoHttp.get(urlRequisicao, headers=self.obterCabecalhos())
+            
+            if respostaHttp.status_code == 401:
+                if not self.renovacaoRealizada:
+                    self.logger.warning("Access Token expirado (401) detectado. Acionando mecanismo de renovacao.")
+                    self.renovarTokenAcesso()
+                    urlsVisitadas.remove(urlRequisicao)
+                    continue
+                else:
+                    self.logger.error("Renovacao ja foi realizada mas o acesso continua negado (401). Interrompendo para evitar loop.")
+                    break
+                    
+            if respostaHttp.status_code == 429:
+                tempoEspera = int(respostaHttp.headers.get("Retry-After", 10))
+                self.logger.warning(f"Rate limit atingido (429). Congelando processo por {tempoEspera} segundos.")
+                urlsVisitadas.remove(urlRequisicao)
+                time.sleep(tempoEspera)
+                continue
+                
+            if respostaHttp.status_code in [403, 404]:
+                self.logger.warning(f"Endpoint rejeitou acesso ({respostaHttp.status_code}) para a rota: {urlRequisicao}")
+                break
+                
+            respostaHttp.raise_for_status()
+            self.renovacaoRealizada = False 
+            
+            cargaDados = respostaHttp.json()
+            registrosExtraidos = self.extrairDadosJson(cargaDados, nomeRecurso)
+            
+            if not registrosExtraidos:
+                self.logger.info("Nenhum dado retornado nesta pagina. Concluindo ciclo de paginacao.")
+                possuiMaisPaginas = False
+                break
+                
+            todosRegistros.extend(registrosExtraidos)
+            self.logger.info(f"Integrados {len(registrosExtraidos)} registros a fila. Total parcial: {len(todosRegistros)}")
+            
+            urlProximaOriginal = self.extrairProximaUrl(cargaDados)
+            urlProximaCorrigida = self.corrigirUrlPaginacao(urlProximaOriginal)
+            
+            if not urlProximaCorrigida:
+                possuiMaisPaginas = False
+            elif urlProximaCorrigida == urlRequisicao:
+                self.logger.warning("A proxima URL e identica a atual. Encerrando paginacao para evitar loop infinito.")
+                possuiMaisPaginas = False
             else:
-                url = None
-
-        if dados_completos:
-            self._salvar_backup(nome_endpoint, dados_completos)
-
-        return dados_completos
-
-    def _salvar_backup(self, nome_endpoint, dados):
-        data_hora = datetime.now().strftime("%Y%m%d_%H%M%S")
-        nome_arquivo = f"{nome_endpoint}_{data_hora}.json"
-        caminho_arquivo = os.path.join(self.diretorio_backup, nome_arquivo)
-
-        with open(caminho_arquivo, "w", encoding="utf-8") as arquivo:
-            json.dump(dados, arquivo, ensure_ascii=False, indent=2)
-        
-        self.logger.info(f"[{nome_endpoint}] Backup salvo em: {caminho_arquivo}")
+                urlRequisicao = urlProximaCorrigida
+                time.sleep(0.5)
+                
+        if todosRegistros:
+            self.salvarArquivoRaw(todosRegistros, nomeRecurso)
+            
+        self.logger.info(f"Extracao consolidada para {nomeRecurso}. Total final: {len(todosRegistros)}")
+        return todosRegistros
