@@ -10,6 +10,32 @@
 ## Data Flow
 RD Station CRM V2 (API REST) → Python (Extract, Transform, Load) → Supabase (PostgreSQL - Schema `bronze`)
 
+## Project Structure
+```
+avantia-sic/
+├── data/
+│   └── raw/
+├── logs/
+├── src/
+│   ├── __init__.py
+│   ├── extract.py
+│   ├── transform.py
+│   ├── load.py
+│   └── pipeline.py
+├── tests/
+│   ├── conftest.py
+│   ├── test_env.py
+│   ├── test_extract.py
+│   ├── test_load.py
+│   ├── test_pipeline.py
+│   └── test_transform.py
+├── .env
+├── .gitignore
+├── pytest.ini
+├── README.md
+├── requirements.txt
+└── run.py
+```
 ## Sources
 | Source | Tipo | Refresh | Notas |
 |--------|------|---------|-------|
