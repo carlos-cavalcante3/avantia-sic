@@ -5,48 +5,55 @@ from src.load import Load
 
 class Pipeline:
     """
-    Classe que orquestra o fluxo ETL completo.
-    Realiza pre-flight checks (testes de conexão) antes de iniciar as extrações.
+    Agregador estrutural que unifica os modulos em um unico pipeline robusto,
+    controlando a execucao em ordem sequencial e estancando falhas irreversiveis por objeto.
     """
-    def __init__(self, url_supabase, chave_supabase, esquemas_tabelas):
-        self.extrator = Extract() 
-        self.transformador = Transform(esquemas_tabelas)
-        self.carregador = Load(url_supabase, chave_supabase)
-        self.logger = logging.getLogger("Pipeline")
-        self.endpoints = [
-            "users", "teams", "organizations", "pipelines",
-            "contacts", "deals", "tasks"
+
+    def __init__(self) -> None:
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.moduloExtracao = Extract()
+        self.moduloTransformacao = Transform()
+        self.moduloCarga = Load()
+        
+        self.listaRecursos = [
+            "deals",
+            "contacts",
+            "organizations",
+            "users",
+            "pipelines",
+            "tasks",
+            "teams"
         ]
 
-    def executar(self):
-        self.logger.info("PIPELINE AVANTIA-SIG INICIADA")
-        
-        if not self.extrator.testar_conexao():
-            self.logger.critical("Abortando pipeline devido a falha na origem (RD Station).")
-            return
+    def processarRecurso(self, nomeRecurso: str) -> None:
+        """
+        Encapsula o ciclo de vida completo de uma extracao unica isolada por bloco try/except,
+        garantindo que se tasks falhar, teams prossiga operando.
+        """
+        try:
+            self.logger.info(f"=== Operacao ETL em curso - Analisando contexto: {nomeRecurso} ===")
             
-        if not self.carregador.testar_conexao():
-            self.logger.critical("Abortando pipeline devido a falha no destino (Supabase).")
-            return
-
-        self.logger.info("Todos os sistemas operacionais. Iniciando fluxo de dados")
-
-        for endpoint in self.endpoints:
-            try:
-                self.logger.info(f"--- Processando endpoint: {endpoint.upper()} ---")
-
-                dados_brutos = self.extrator.extrair_endpoint(endpoint)
+            dadosBrutos = self.moduloExtracao.extrairRecurso(nomeRecurso)
+            
+            if not dadosBrutos:
+                self.logger.warning(f"Sem resposta util para a rota {nomeRecurso}. Pulando para proximo ciclo.")
+                return
                 
-                if not dados_brutos:
-                    self.logger.info(f"[{endpoint}] Nenhum dado localizado. Pulando para o próximo.")
-                    continue
+            dadosTransformados = self.moduloTransformacao.transformarDados(dadosBrutos, nomeRecurso)
+            self.moduloCarga.carregarDados(dadosTransformados, nomeRecurso)
+            
+            self.logger.info(f"=== Operacao ETL fechada para o contexto: {nomeRecurso} ===")
+            
+        except Exception as erroProcessamento:
+            self.logger.error(f"Erro catastrófico retido no bloco do recurso {nomeRecurso}: {str(erroProcessamento)}", exc_info=True)
 
-                dados_prontos = self.transformador.preparar_dados(endpoint, dados_brutos)
-
-                self.carregador.carregar_dados(endpoint, dados_prontos)
-
-            except Exception as erro:
-                self.logger.error(f"Falha não tratada no fluxo de {endpoint}: {erro}", exc_info=True)
-                self.logger.info("Continuando com o próximo endpoint...")
-
-        self.logger.info("=== PIPELINE ETL FINALIZADA ===")
+    def executarPipeline(self) -> None:
+        """
+        Dispara massivamente o processamento das rotas declaradas ate sua conclusao sistêmica.
+        """
+        self.logger.info("Partida automatizada da esteira ETL acionada")
+        
+        for recursoAtual in self.listaRecursos:
+            self.processarRecurso(recursoAtual)
+            
+        self.logger.info("Processamento percorrido por todos os nos. Pipeline em estado ocioso e estavel.")
