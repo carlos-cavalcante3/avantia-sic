@@ -8,7 +8,7 @@
 **Última atualização:** 20-04-2026  
 
 ## Data Flow
-RD Station CRM V2 (API REST) → Python (Extract, Transform, Load) → Supabase (PostgreSQL - Schema `bronze`)
+RD Station CRM V2 (API REST) → Python (Extract, Transform, Load) → Supabase (PostgreSQL - Schema `bronze`)  → Transformações (Schema `silver`)
 
 ## Project Structure
 ```
@@ -16,13 +16,23 @@ avantia-sic/
 ├── data/
 │   └── raw/
 ├── logs/
+├── sql/
+│   ├── bronze_layer_DDL.sql
+│   └── silver_layer_DDL.sql
 ├── src/
 │   ├── __init__.py
 │   ├── extract.py
 │   ├── transform.py
 │   ├── load.py
-│   └── pipeline.py
+│   ├── pipeline.py
+│   ├── pipeline_silver.py
+│   └── silver/
+│       ├── __init__.py
+│       ├── load_silver.py
+│       ├── transform_silver.py
+│       └── validation.py
 ├── tests/
+│   ├── __pycache__/
 │   ├── conftest.py
 │   ├── test_env.py
 │   ├── test_extract.py
