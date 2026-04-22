@@ -1,0 +1,33 @@
+name: Pipeline ETL RD Station
+
+on:
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+jobs:
+  executar-etl:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout do codigo
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Executar Pipeline Completa
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          RD_ACCESS_TOKEN: ${{ secrets.RD_ACCESS_TOKEN }}
+          RD_REFRESH_TOKEN: ${{ secrets.RD_REFRESH_TOKEN }}
+          RD_CLIENT_ID: ${{ secrets.RD_CLIENT_ID }}
+          RD_CLIENT_SECRET: ${{ secrets.RD_CLIENT_SECRET }}
+        run: python run.py
