@@ -3,13 +3,9 @@ import logging
 from datetime import datetime
 from dotenv import load_dotenv
 from src.pipeline import Pipeline
+from src.pipeline_silver import PipelineSilver
 
-def configurarLogs() -> None:
-    """
-    Configura o sistema de logging centralizado para toda a aplicacao, 
-    padronizando a saida para monitoramento em producao via console 
-    e persistindo o historico em arquivos de log dedicados.
-    """
+def configurarLogs():
     diretorioBase = os.path.dirname(os.path.abspath(__file__))
     diretorioLogs = os.path.join(diretorioBase, "logs")
     os.makedirs(diretorioLogs, exist_ok=True)
@@ -26,21 +22,21 @@ def configurarLogs() -> None:
         ]
     )
 
-def main() -> None:
-    """
-    Ponto de entrada do sistema. Carrega as variaveis de ambiente e orquestra 
-    a inicializacao da pipeline de dados garantindo tratamento global de falhas.
-    """
+def main():
     load_dotenv(override=True)
     configurarLogs()
     
     loggerPrincipal = logging.getLogger("Main")
-    loggerPrincipal.info("Iniciando a execucao da Pipeline ETL RD Station CRM para Supabase")
+    loggerPrincipal.info("Iniciando a execucao da Pipeline ETL RD Station (Bronze e Silver)")
     
     try:
-        pipelinePrincipal = Pipeline()
-        pipelinePrincipal.executarPipeline()
-        loggerPrincipal.info("Pipeline ETL finalizada com sucesso")
+        pipelineBronze = Pipeline()
+        pipelineBronze.executarPipeline()
+        
+        pipelineSilver = PipelineSilver()
+        pipelineSilver.executarPipeline()
+        
+        loggerPrincipal.info("Pipeline ETL completa finalizada com exito")
     except Exception as erroExecucao:
         loggerPrincipal.error(f"Falha critica na execucao da Pipeline: {str(erroExecucao)}", exc_info=True)
         raise
