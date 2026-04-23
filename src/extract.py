@@ -34,9 +34,9 @@ class Extract:
     def criarSessaoResiliente(self) -> requests.Session:
         sessaoResiliente = requests.Session()
         estrategiaTentativas = Retry(
-            total=4,
+            total=5,
             backoff_factor=2,
-            status_forcelist=[500, 502, 503, 504],
+            status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=["GET", "POST"]
         )
         adaptadorHttp = HTTPAdapter(max_retries=estrategiaTentativas)
@@ -45,10 +45,6 @@ class Extract:
         return sessaoResiliente
 
     def salvarArquivoRaw(self, dados: List[Dict[str, Any]], nomeRecurso: str) -> None:
-        """
-        Gera o arquivo CSV na camada data/raw/ com a nomenclatura exigida,
-        salvaguardando a informacao bruta extraida da API.
-        """
         caminhoDiretorio = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "raw")
         os.makedirs(caminhoDiretorio, exist_ok=True)
         
@@ -57,7 +53,7 @@ class Extract:
         
         try:
             tabelaDadosRaw = pd.DataFrame(dados)
-            tabelaDadosRaw.to_csv(caminhoArquivo, index=False, encoding="utf-8")
+            tabelaDadosRaw.to_csv(caminhoArquivo, index=False, encoding="utf-8-sig", lineterminator='\r\n')
             self.logger.info(f"Arquivo raw salvo com sucesso em {caminhoArquivo}")
         except Exception as erroBackup:
             self.logger.error(f"Falha ao gerar arquivo raw para {nomeRecurso}: {str(erroBackup)}")
@@ -106,6 +102,7 @@ class Extract:
         urlCorrigida = urlOriginal.replace("https://api.rd.services/api/v2/", "https://api.rd.services/crm/v2/")
         urlCorrigida = urlCorrigida.replace("https://api.rd.services/v2/", "https://api.rd.services/crm/v2/")
         urlCorrigida = urlCorrigida.replace("http://api.rd.services/crm/v2/", "https://api.rd.services/crm/v2/")
+        urlCorrigida = urlCorrigida.replace("http://api.rd.services/v2/", "https://api.rd.services/crm/v2/")
         return urlCorrigida
 
     def extrairProximaUrl(self, cargaDados: Any) -> str:
@@ -137,6 +134,7 @@ class Extract:
         urlRequisicao = f"{self.urlBase}/{nomeRecurso}?page[size]=100"
         possuiMaisPaginas = True
         urlsVisitadas = set()
+        paginaAtual = 1
         
         while possuiMaisPaginas and urlRequisicao:
             if urlRequisicao in urlsVisitadas:
@@ -186,15 +184,20 @@ class Extract:
             urlProximaOriginal = self.extrairProximaUrl(cargaDados)
             urlProximaCorrigida = self.corrigirUrlPaginacao(urlProximaOriginal)
             
-            if not urlProximaCorrigida:
-                possuiMaisPaginas = False
-            elif urlProximaCorrigida == urlRequisicao:
-                self.logger.warning("A proxima URL e identica a atual. Encerrando paginacao para evitar loop infinito.")
-                possuiMaisPaginas = False
-            else:
+            if urlProximaCorrigida and urlProximaCorrigida != urlRequisicao:
                 urlRequisicao = urlProximaCorrigida
-                time.sleep(0.5)
-                
+                paginaAtual += 1
+            else:
+                indicadorMaisPaginas = cargaDados.get("has_more", False)
+                if indicadorMaisPaginas:
+                    paginaAtual += 1
+                    urlRequisicao = f"{self.urlBase}/{nomeRecurso}?page={paginaAtual}"
+                    self.logger.warning(f"Fallback manual ativado para prevenir perda de dados. Forcando avanco para pagina {paginaAtual}")
+                else:
+                    possuiMaisPaginas = False
+            
+            time.sleep(0.5)
+            
         if todosRegistros:
             self.salvarArquivoRaw(todosRegistros, nomeRecurso)
             
