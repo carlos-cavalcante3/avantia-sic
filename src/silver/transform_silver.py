@@ -105,7 +105,7 @@ class TransformSilver:
 
         tabelaNegocios.dropna(subset=['id', 'status'], inplace=True)
         
-        colunasUteis = ['id', 'name', 'status', 'total_price', 'expected_close_date', 'closed_at', 'pipeline_id', 'stage_id', 'owner_id', 'organization_id', 'lost_reason_id', 'rating', 'custom_fields_tipo_de_contrato', 'created_at', 'updated_at']
+        colunasUteis = ['id', 'name', 'status', 'total_price', 'one_time_price', 'recurrence_price', 'expected_close_date', 'closed_at', 'pipeline_id', 'stage_id', 'owner_id', 'organization_id', 'lost_reason_id', 'rating', 'custom_fields_tipo_de_contrato', 'created_at', 'updated_at']
         colunasPresentes = [coluna for coluna in colunasUteis if coluna in tabelaNegocios.columns]
         tabelaNegocios = tabelaNegocios[colunasPresentes]
         
