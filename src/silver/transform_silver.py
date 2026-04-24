@@ -98,10 +98,10 @@ class TransformSilver:
         listaDicionarios = tabelaDeduplicada.to_dict(orient='records')
         return self.normalizarInteiros(listaDicionarios)
 
-    def processarNegocios(self, dadosBronze):
+    def processarNegocios(self, dadosBronze, mapaEtapasAtuais=None):
         tabelaNegocios = pd.DataFrame(dadosBronze)
         if tabelaNegocios.empty:
-            return []
+            return [], []
 
         tabelaNegocios.dropna(subset=['id', 'status'], inplace=True)
         
@@ -113,7 +113,27 @@ class TransformSilver:
         tabelaDeduplicada = self.deduplicarInteligente(tabelaPadronizada)
         
         listaDicionarios = tabelaDeduplicada.to_dict(orient='records')
-        return self.normalizarInteiros(listaDicionarios)
+        listaNegociosLimpos = self.normalizarInteiros(listaDicionarios)
+        
+        listaHistorico = []
+        if mapaEtapasAtuais is not None:
+            from datetime import datetime, timezone
+            momentoAtual = datetime.now(timezone.utc).isoformat()
+            
+            for negocio in listaNegociosLimpos:
+                idNegocio = str(negocio.get('id'))
+                etapaNova = str(negocio.get('stage_id'))
+                etapaAntiga = str(mapaEtapasAtuais.get(idNegocio))
+                
+                if etapaAntiga != "None" and etapaAntiga != etapaNova:
+                    listaHistorico.append({
+                        "deal_id": idNegocio,
+                        "old_stage_id": etapaAntiga,
+                        "new_stage_id": etapaNova,
+                        "changed_at": momentoAtual
+                    })
+
+        return listaNegociosLimpos, listaHistorico
 
     def processarOrganizacoes(self, dadosBronze):
         tabelaOrganizacoes = pd.DataFrame(dadosBronze)
@@ -158,8 +178,9 @@ class TransformSilver:
         
         if 'owner_ids' in tabelaTasks.columns:
             tabelaTasks['owner_ids'] = tabelaTasks['owner_ids'].astype(str).str.replace('"', '')
-            tabelaTasks['owner_ids'].replace('nan', np.nan, inplace=True)
-            tabelaTasks['owner_ids'].replace('None', np.nan, inplace=True)
+            # Atualização: substituindo inplace=True por reatribuição direta para evitar o ChainedAssignmentError do Pandas
+            tabelaTasks['owner_ids'] = tabelaTasks['owner_ids'].replace('nan', np.nan)
+            tabelaTasks['owner_ids'] = tabelaTasks['owner_ids'].replace('None', np.nan)
         
         colunasUteis = ['id', 'name', 'type', 'status', 'deal_id', 'owner_ids', 'due_date', 'completed_at', 'completed_by_id', 'created_by_id', 'description', 'created_at', 'updated_at']
         colunasPresentes = [coluna for coluna in colunasUteis if coluna in tabelaTasks.columns]
