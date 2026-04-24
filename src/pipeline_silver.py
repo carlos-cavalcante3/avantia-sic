@@ -6,9 +6,8 @@ from src.silver.validation import Validate
 
 class PipelineSilver:
     """
-    Orquestrador oficial da camada Silver, encarregado de coordenar a leitura paginada dos dados brutos,
-    acionar a transformacao de negocio, efetuar a carga analitica e validar a integridade da operacao
-    para todos os endpoints do CRM.
+    Orquestrador oficial da camada Silver. Efetua processamento hibrido com suporte
+    a Slowly Changing Dimensions (SCD4) e execucao do snapshot diario para a camada Gold.
     """
     def __init__(self):
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -48,9 +47,12 @@ class PipelineSilver:
         self.moduloCarga.carregarDados(contatosTransformados, "contacts")
         self.moduloValidacao.validarPerdaDados("contacts")
 
+        mapaEtapasDeals = self.moduloCarga.obterMapeamentoEtapasAtuais()
         dadosNegociosBronze = self.lerDadosBronze("deals")
-        negociosTransformados = self.moduloTransformacao.processarNegocios(dadosNegociosBronze)
+        negociosTransformados, historicoGerado = self.moduloTransformacao.processarNegocios(dadosNegociosBronze, mapaEtapasDeals)
         self.moduloCarga.carregarDados(negociosTransformados, "deals")
+        if historicoGerado:
+            self.moduloCarga.carregarHistoricoDeals(historicoGerado)
         self.moduloValidacao.validarPerdaDados("deals")
 
         dadosOrganizacoesBronze = self.lerDadosBronze("organizations")
@@ -77,5 +79,9 @@ class PipelineSilver:
         usersTransformados = self.moduloTransformacao.processarUsers(dadosUsersBronze)
         self.moduloCarga.carregarDados(usersTransformados, "users")
         self.moduloValidacao.validarPerdaDados("users")
+        
+        self.moduloCarga.gerarSnapshotDiario()
+
+        self.moduloCarga.atualizarCamadaGold()
 
         self.logger.info("FInalizado com exito")
