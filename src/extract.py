@@ -8,6 +8,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from dotenv import set_key
 from typing import List, Dict, Any
+from supabase import create_client, Client
 
 class Extract:
     """
@@ -22,11 +23,20 @@ class Extract:
         self.urlBase = "https://api.rd.services/crm/v2"
         self.urlAutenticacao = "https://api.rd.services/auth/token"
         
-        self.tokenAcesso = os.environ.get("RD_ACCESS_TOKEN")
-        self.tokenRenovacao = os.environ.get("RD_REFRESH_TOKEN")
         self.identificadorCliente = os.environ.get("RD_CLIENT_ID")
         self.segredoCliente = os.environ.get("RD_CLIENT_SECRET")
-        self.caminhoArquivoAmbiente = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+        
+        urlBanco = os.environ.get("SUPABASE_URL")
+        chaveBanco = os.environ.get("SUPABASE_KEY")
+        self.clienteSupabase = create_client(urlBanco, chaveBanco)
+        
+        respostaAuth = self.clienteSupabase.schema("silver").table("api_auth").select("*").eq("id", 1).execute()
+        
+        if respostaAuth.data:
+            self.tokenAcesso = respostaAuth.data[0]["access_token"]
+            self.tokenRenovacao = respostaAuth.data[0]["refresh_token"]
+        else:
+            raise Exception("Tabela api_auth vazia. Insira os tokens iniciais no Supabase.")
         
         self.sessaoHttp = self.criarSessaoResiliente()
         self.renovacaoRealizada = False
@@ -75,10 +85,14 @@ class Extract:
             self.tokenAcesso = dadosResposta.get("access_token")
             self.tokenRenovacao = dadosResposta.get("refresh_token", self.tokenRenovacao)
             
-            set_key(self.caminhoArquivoAmbiente, "RD_ACCESS_TOKEN", self.tokenAcesso)
-            set_key(self.caminhoArquivoAmbiente, "RD_REFRESH_TOKEN", self.tokenRenovacao)
+            from datetime import datetime, timezone
+            self.clienteSupabase.schema("silver").table("api_auth").update({
+                "access_token": self.tokenAcesso,
+                "refresh_token": self.tokenRenovacao,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }).eq("id", 1).execute()
             
-            self.logger.info("Token de acesso renovado, arquivos atualizados e persistidos com sucesso.")
+            self.logger.info("Token de acesso renovado e salvo com sucesso no Supabase.")
             self.renovacaoRealizada = True
         elif respostaHttp.status_code in [400, 401]:
             mensagemErro = f"REFRESH_TOKEN INVALIDO ou expirado (Status {respostaHttp.status_code}). Gere um novo token manualmente."
