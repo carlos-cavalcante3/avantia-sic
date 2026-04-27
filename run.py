@@ -21,6 +21,9 @@ def configurarLogs():
             logging.FileHandler(caminhoArquivoLog, encoding="utf-8")
         ]
     )
+    
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 def main():
     load_dotenv(override=True)

@@ -5,10 +5,6 @@ from src.silver.load_silver import LoadSilver
 from src.silver.validation import Validate
 
 class PipelineSilver:
-    """
-    Orquestrador oficial da camada Silver. Efetua processamento hibrido com suporte
-    a Slowly Changing Dimensions (SCD4) e execucao do snapshot diario para a camada Gold.
-    """
     def __init__(self):
         self.logger = logging.getLogger(self.__class__.__name__)
         instanciaLeituraBronze = Load()
@@ -21,27 +17,19 @@ class PipelineSilver:
         todosRegistros = []
         tamanhoLote = 1000
         indiceInicio = 0
-        
         while True:
             indiceFim = indiceInicio + tamanhoLote - 1
             respostaApi = self.leitorBronze.schema("bronze").table(nomeTabela).select("*").range(indiceInicio, indiceFim).execute()
-            
             registrosPagina = respostaApi.data
             if not registrosPagina:
                 break
-                
             todosRegistros.extend(registrosPagina)
-            
             if len(registrosPagina) < tamanhoLote:
                 break
-                
             indiceInicio += tamanhoLote
-            
         return todosRegistros
 
     def executarPipeline(self):
-        self.logger.info("Pipeline Camada bronze -> Camada Silver iniciada")
-
         dadosContatosBronze = self.lerDadosBronze("contacts")
         contatosTransformados = self.moduloTransformacao.processarContatos(dadosContatosBronze)
         self.moduloCarga.carregarDados(contatosTransformados, "contacts")
@@ -65,6 +53,11 @@ class PipelineSilver:
         self.moduloCarga.carregarDados(pipelinesTransformados, "pipelines")
         self.moduloValidacao.validarPerdaDados("pipelines")
 
+        dadosStagesBronze = self.lerDadosBronze("stages")
+        stagesTransformados = self.moduloTransformacao.processarStages(dadosStagesBronze)
+        self.moduloCarga.carregarDados(stagesTransformados, "stages")
+        self.moduloValidacao.validarPerdaDados("stages")
+
         dadosTasksBronze = self.lerDadosBronze("tasks")
         tasksTransformadas = self.moduloTransformacao.processarTasks(dadosTasksBronze)
         self.moduloCarga.carregarDados(tasksTransformadas, "tasks")
@@ -81,7 +74,4 @@ class PipelineSilver:
         self.moduloValidacao.validarPerdaDados("users")
         
         self.moduloCarga.gerarSnapshotDiario()
-
         self.moduloCarga.atualizarCamadaGold()
-
-        self.logger.info("FInalizado com exito")

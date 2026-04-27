@@ -2,13 +2,11 @@ CREATE SCHEMA IF NOT EXISTS bronze;
 
 GRANT USAGE ON SCHEMA bronze TO anon, authenticated, service_role;
 
-
-# Caso haja mudanças sempre manter o drop table nas colunas antigas pra não haver conflitos
-
 DROP TABLE IF EXISTS bronze.deals CASCADE;
 DROP TABLE IF EXISTS bronze.contacts CASCADE;
 DROP TABLE IF EXISTS bronze.organizations CASCADE;
 DROP TABLE IF EXISTS bronze.pipelines CASCADE;
+DROP TABLE IF EXISTS bronze.stages CASCADE;
 DROP TABLE IF EXISTS bronze.tasks CASCADE;
 DROP TABLE IF EXISTS bronze.teams CASCADE;
 DROP TABLE IF EXISTS bronze.users CASCADE;
@@ -27,6 +25,15 @@ CREATE TABLE bronze.pipelines (
     name TEXT,
     "order" INTEGER,
     stage_ids JSONB,
+    created_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ
+);
+
+CREATE TABLE bronze.stages (
+    id TEXT PRIMARY KEY,
+    pipeline_id TEXT,
+    name TEXT,
+    "order" INTEGER,
     created_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ
 );
@@ -126,24 +133,17 @@ CREATE TABLE bronze.tasks (
     updated_at TIMESTAMPTZ
 );
 
-
 CREATE INDEX idx_deals_updated_at ON bronze.deals(updated_at);
 CREATE INDEX idx_deals_organization_id ON bronze.deals(organization_id);
 CREATE INDEX idx_deals_pipeline_id ON bronze.deals(pipeline_id);
-
 CREATE INDEX idx_ontacts_updated_at ON bronze.contacts(updated_at);
 CREATE INDEX idx_contacts_organization_id ON bronze.contacts(organization_id);
-
 CREATE INDEX idx_organizations_updated_at ON bronze.organizations(updated_at);
-
 CREATE INDEX idx_tasks_updated_at ON bronze.tasks(updated_at);
 CREATE INDEX idx_tasks_deal_id ON bronze.tasks(deal_id);
-
-# Permissões
 
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA bronze TO anon, authenticated, service_role;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA bronze TO anon, authenticated, service_role;
 GRANT ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA bronze TO anon, authenticated, service_role;
-
 ALTER DEFAULT PRIVILEGES IN SCHEMA bronze GRANT ALL ON TABLES TO anon, authenticated, service_role;
 ALTER DEFAULT PRIVILEGES IN SCHEMA bronze GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;
