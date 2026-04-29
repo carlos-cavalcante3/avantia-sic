@@ -86,11 +86,39 @@ class TransformSilver:
             return [], []
         tabelaNegocios.dropna(subset=['id', 'status'], inplace=True)
         
-        # A MÁGICA ACONTECE AQUI: Extraímos da string de custom_fields o motivo da perda!
-        if 'custom_fields' in tabelaNegocios.columns:
-            tabelaNegocios['motivo_da_perda'] = tabelaNegocios['custom_fields'].apply(lambda x: self.extrairChaveJson(x, 'motivo-da-perda'))
+        # Função auxiliar para caso o dado venha como string suja
+        def extrair_motivo_limpo(valor_bruto):
+            if pd.isna(valor_bruto) or not valor_bruto:
+                return "Não Informado"
+            import ast
+            valor_atual = valor_bruto
+            if isinstance(valor_atual, str):
+                try:
+                    valor_atual = ast.literal_eval(valor_atual)
+                except Exception:
+                    pass
+            if isinstance(valor_atual, dict):
+                motivo = valor_atual.get('motivo-da-perda')
+                if motivo is None or str(motivo).strip() == "" or str(motivo).strip().lower() == 'none':
+                    return "Não Informado"
+                return str(motivo).strip()
+            return str(valor_bruto).strip()
+
+        # A NOVA LÓGICA: Procura a coluna explodida pelo transform.py (Bronze) primeiro
+        if 'custom_fields_motivo_da_perda' in tabelaNegocios.columns:
+            tabelaNegocios['motivo_da_perda'] = tabelaNegocios['custom_fields_motivo_da_perda'].apply(
+                lambda x: extrair_motivo_limpo(x) if isinstance(x, str) and '{' in x else x
+            )
+        elif 'custom_fields' in tabelaNegocios.columns:
+            tabelaNegocios['motivo_da_perda'] = tabelaNegocios['custom_fields'].apply(extrair_motivo_limpo)
         else:
             tabelaNegocios['motivo_da_perda'] = 'Não Informado'
+
+        # Limpeza final contra nulos e vazios
+        tabelaNegocios['motivo_da_perda'] = tabelaNegocios['motivo_da_perda'].fillna('Não Informado')
+        tabelaNegocios['motivo_da_perda'] = tabelaNegocios['motivo_da_perda'].replace(
+            ['', 'None', 'nan', 'NaN', 'None.'], 'Não Informado'
+        )
 
         colunasUteis = ['id', 'name', 'status', 'total_price', 'one_time_price', 'recurrence_price', 'expected_close_date', 'closed_at', 'pipeline_id', 'stage_id', 'owner_id', 'organization_id', 'lost_reason_id', 'rating', 'custom_fields_tipo_de_contrato', 'motivo_da_perda', 'created_at', 'updated_at']
         colunasPresentes = [coluna for coluna in colunasUteis if coluna in tabelaNegocios.columns]
