@@ -26,7 +26,6 @@ CREATE TABLE silver.organizations (
     id TEXT PRIMARY KEY,
     name TEXT,
     owner_id TEXT,
-    segment_name TEXT,
     custom_fields_cidade TEXT,
     custom_fields_estado TEXT,
     custom_fields_razao_social TEXT,
@@ -50,6 +49,7 @@ CREATE TABLE silver.deals (
     lost_reason_id TEXT,
     rating INTEGER,
     custom_fields_tipo_de_contrato TEXT,
+    motivo_da_perda TEXT,
     created_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ
 );
@@ -109,9 +109,4 @@ CREATE TABLE silver.users (
     updated_at TIMESTAMPTZ
 );
 
-GRANT USAGE ON SCHEMA silver TO anon, authenticated, service_role;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA silver TO anon, authenticated, service_role;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA silver TO anon, authenticated, service_role;
-GRANT ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA silver TO anon, authenticated, service_role;
-
-NOTIFY pgrst, 'reload schema';

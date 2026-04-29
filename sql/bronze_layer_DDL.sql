@@ -102,17 +102,7 @@ CREATE TABLE bronze.deals (
     campaign_id TEXT,
     contact_ids JSONB,
     rating INTEGER,
-    custom_fields_audio_e_video TEXT,
-    custom_fields_data_da_criacao TIMESTAMPTZ,
-    custom_fields_data_de_fechamento TIMESTAMPTZ,
-    custom_fields_data_de_origem_da_proposta TIMESTAMPTZ,
-    custom_fields_descricao TEXT,
-    custom_fields_margem TEXT,
-    custom_fields_motivo_da_perda TEXT,
-    custom_fields_prazo_do_contrato TEXT,
-    custom_fields_proposta_entregue_ao_cliente TEXT,
-    custom_fields_registro_de_oportunidade TEXT,
-    custom_fields_tipo_de_contrato TEXT,
+    custom_fields TEXT,
     created_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ
 );
@@ -133,17 +123,4 @@ CREATE TABLE bronze.tasks (
     updated_at TIMESTAMPTZ
 );
 
-CREATE INDEX idx_deals_updated_at ON bronze.deals(updated_at);
-CREATE INDEX idx_deals_organization_id ON bronze.deals(organization_id);
-CREATE INDEX idx_deals_pipeline_id ON bronze.deals(pipeline_id);
-CREATE INDEX idx_ontacts_updated_at ON bronze.contacts(updated_at);
-CREATE INDEX idx_contacts_organization_id ON bronze.contacts(organization_id);
-CREATE INDEX idx_organizations_updated_at ON bronze.organizations(updated_at);
-CREATE INDEX idx_tasks_updated_at ON bronze.tasks(updated_at);
-CREATE INDEX idx_tasks_deal_id ON bronze.tasks(deal_id);
-
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA bronze TO anon, authenticated, service_role;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA bronze TO anon, authenticated, service_role;
-GRANT ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA bronze TO anon, authenticated, service_role;
-ALTER DEFAULT PRIVILEGES IN SCHEMA bronze GRANT ALL ON TABLES TO anon, authenticated, service_role;
-ALTER DEFAULT PRIVILEGES IN SCHEMA bronze GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;
