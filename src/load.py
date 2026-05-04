@@ -25,7 +25,7 @@ class Load:
         opcoesCliente = ClientOptions(schema="bronze")
         self.clienteSupabase: Client = create_client(self.urlSupabase, self.chaveSupabase, options=opcoesCliente)
 
-    def _descobrirColunasSchema(self, nomeTabela: str) -> List[str]:
+    def descobrirColunasSchema(self, nomeTabela: str) -> List[str]:
         """
         Consome a definicao OpenAPI nativa do PostgREST no Supabase para descobrir 
         dinamicamente as colunas fisicas reais da tabela no schema alvo.
@@ -62,7 +62,7 @@ class Load:
         Filtra estritamente o payload removendo colunas dinamicas geradas no transform 
         que nao existem na tabela destino do PostgreSQL.
         """
-        colunasPermitidas = self._descobrirColunasSchema(nomeTabela)
+        colunasPermitidas = self.descobrirColunasSchema(nomeTabela)
         
         if not colunasPermitidas:
             self.logger.warning(f"Introspeccao inoperante para {nomeTabela}. Nao havera corte de colunas dinâmicas neste ciclo.")

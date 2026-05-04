@@ -113,7 +113,7 @@ class Extract:
                 return cargaDados["items"]
         return []
 
-    def _requisicaoBlindada(self, url: str) -> requests.Response:
+    def requisicaoBlindada(self, url: str) -> requests.Response:
         while True:
             respostaHttp = self.sessaoHttp.get(url, headers=self.obterCabecalhos())
             if respostaHttp.status_code == 401:
@@ -131,7 +131,7 @@ class Extract:
     def extrairStages(self) -> List[Dict[str, Any]]:
         todosRegistros = []
         urlPipelines = f"{self.urlBase}/pipelines"
-        respostaPipelines = self._requisicaoBlindada(urlPipelines)
+        respostaPipelines = self.requisicaoBlindada(urlPipelines)
         if respostaPipelines.status_code == 200:
             pipelines = respostaPipelines.json().get('data', [])
             for pipeline in pipelines:
@@ -139,7 +139,7 @@ class Extract:
                 stage_ids = pipeline.get('stage_ids', [])
                 for index, stage_id in enumerate(stage_ids):
                     urlStage = f"{self.urlBase}/pipelines/{pipeline_id}/stages/{stage_id}"
-                    respStage = self._requisicaoBlindada(urlStage)
+                    respStage = self.requisicaoBlindada(urlStage)
                     if respStage.status_code == 200:
                         stage_data = respStage.json().get('data', {})
                         stage_data['pipeline_id'] = pipeline_id
@@ -162,7 +162,7 @@ class Extract:
             if urlRequisicao in urlsVisitadas:
                 break
             urlsVisitadas.add(urlRequisicao)
-            respostaHttp = self._requisicaoBlindada(urlRequisicao)
+            respostaHttp = self.requisicaoBlindada(urlRequisicao)
             if respostaHttp.status_code in [401, 403, 404]:
                 break
             respostaHttp.raise_for_status()
