@@ -3,7 +3,7 @@
 
 ## Overview
 
-**Propósito:** Automatizar a ingestão contínua, resiliente e padronizada dos dados do RD Station CRM para um Data Warehouse no Supabase, seguindo arquitetura Medallion (`bronze` → `silver`).
+**Propósito:** Automatizar a ingestão contínua, resiliente e padronizada dos dados do RD Station CRM para um Data Warehouse no Supabase, seguindo arquitetura Medallion (`bronze` → `silver` → `gold`).
 
 A camada **Bronze** preserva os dados originais como fonte oficial de verdade (*source of truth*), enquanto a camada **Silver** entrega dados limpos, padronizados e prontos para consumo analítico em BI, dashboards e futuras modelagens Gold.
 
@@ -11,7 +11,7 @@ O projeto foi construído com foco em idempotência, rastreabilidade, autonomia 
 
 **Owner:** Carlos Cavalcante / Time Comercial  
 **Contato:** carlos.cavalcante@avantia.com.br  
-**Última atualização:** 22-04-2026
+**Última atualização:** 11-05-2026
 
 ## Data Flow
 
@@ -19,8 +19,8 @@ RD Station CRM V2 (API REST)
 → Python ETL (Extract, Transform, Load)  
 → Supabase PostgreSQL (`schema bronze`)  
 → Processamento Analítico (`schema silver`)  
-→ BI / Dashboards / Camada Gold
-
+→ Camada Gold → Materialized Views
+→ Frontend próprio no Lovable
 ---
 
 ## Project Structure
@@ -34,6 +34,7 @@ avantia-sic/
 ├── sql/
 │   ├── bronze_layer_DDL.sql
 │   └── silver_layer_DDL.sql
+│   └── gold_layer_DDL.sql
 ├── src/
 │   ├── __init__.py
 │   ├── extract.py
@@ -89,12 +90,12 @@ avantia-sic/
 - Carga totalmente idempotente com `upsert` por chave primária (`id`)
 - Renovação automática de credenciais sem intervenção manual
 - Deduplicação inteligente por densidade de informação
-- Parsing recursivo para JSONs serializados incorretamente pela API
 - Alinhamento dinâmico com schema físico do banco
 - Validação volumétrica entre Bronze e Silver
-- Backup raw local para auditoria e rastreabilidade
+- Backup raw (local) para auditoria e rastreabilidade
 - Execução automatizada diária com GitHub Actions
 - Logs completos para monitoramento operacional
+- Atualização automática das Views e Analytics do Lovable 
 
 ## Transformations
 
@@ -216,7 +217,5 @@ pytest
 
 
 ## Próximos Passos
-- Criação e estruturação da camada gold
-- Procurar sistema para criação de dashboards estratégicos
-- Consumo da camada gold em dashboards de insights variados para o Diretor Comercial Eduardo
-- inserção dos dashboards em plataforma de frontend (Lovable)
+- Finalizar atualizações dos dashboards de acordo com a necessidade do Time
+- Procurar por falhas do sistema 
