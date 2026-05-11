@@ -19,12 +19,21 @@ class Extract:
         urlBanco = os.environ.get("SUPABASE_URL")
         chaveBanco = os.environ.get("SUPABASE_KEY")
         self.clienteSupabase: Client = create_client(str(urlBanco), str(chaveBanco))
+        
+        self.headers: Dict[str, str] = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": ""
+        }
+        
         respostaAuth = self.clienteSupabase.schema("silver").table("api_auth").select("*").eq("id", 1).execute()
         if respostaAuth.data:
             self.tokenAcesso = respostaAuth.data[0]["access_token"]
             self.tokenRenovacao = respostaAuth.data[0]["refresh_token"]
+            self.headers["Authorization"] = f"Bearer {self.tokenAcesso}"
         else:
             raise Exception("Tabela api_auth vazia.")
+            
         self.sessaoHttp = self.criarSessaoResiliente()
         self.renovacaoRealizada = False
 
@@ -53,34 +62,53 @@ class Extract:
             self.logger.error(f"Falha ao gerar arquivo raw: {str(erroBackup)}")
 
     def renovarTokenAcesso(self) -> None:
-        cargaDadosAutenticacao = {
+        """
+        Renova as credenciais OAuth2 na API da RD Station utilizando o token de renovacao mais recente
+        e atualiza o armazenamento no Supabase e os cabecalhos em memoria.
+        """
+        self.logger.info("Iniciando renovação do Access Token via Refresh Token...")
+        
+        auth_data = self.clienteSupabase.schema("silver").table("api_auth").select("refresh_token").eq("id", 1).execute()
+        if not auth_data.data:
+            raise Exception("Nenhum registro de autenticação encontrado na tabela silver.api_auth (id=1).")
+            
+        refresh_token_atual = auth_data.data[0]["refresh_token"]
+        
+        payload = {
             "client_id": self.identificadorCliente,
             "client_secret": self.segredoCliente,
-            "refresh_token": self.tokenRenovacao,
+            "refresh_token": refresh_token_atual.strip(),
             "grant_type": "refresh_token"
         }
-        respostaHttp = self.sessaoHttp.post(self.urlAutenticacao, json=cargaDadosAutenticacao)
-        if respostaHttp.status_code == 200:
-            dadosResposta = respostaHttp.json()
-            self.tokenAcesso = dadosResposta.get("access_token")
-            self.tokenRenovacao = dadosResposta.get("refresh_token", self.tokenRenovacao)
-            self.clienteSupabase.schema("silver").table("api_auth").update({
-                "access_token": self.tokenAcesso,
-                "refresh_token": self.tokenRenovacao,
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            }).eq("id", 1).execute()
-            self.renovacaoRealizada = True
-        elif respostaHttp.status_code in [400, 401]:
-            raise Exception(f"REFRESH_TOKEN INVALIDO {respostaHttp.status_code}")
+        
+        headers_auth = {"Content-Type": "application/json"}
+        
+        resposta = requests.post(self.urlAutenticacao, json=payload, headers=headers_auth)
+        
+        if resposta.status_code == 200:
+            novos_tokens = resposta.json()
+            novo_access = novos_tokens["access_token"]
+            novo_refresh = novos_tokens["refresh_token"]
+            
+            self.tokenAcesso = novo_access
+            self.tokenRenovacao = novo_refresh
+            self.headers["Authorization"] = f"Bearer {novo_access}"
+            
+            update_payload = {
+                "access_token": novo_access,
+                "refresh_token": novo_refresh,
+                "updated_at": "now()" 
+            }
+            
+            self.clienteSupabase.schema("silver").table("api_auth").update(update_payload).eq("id", 1).execute()
+            self.logger.info("Token renovado e atualizado no Supabase com sucesso!")
         else:
-            raise Exception(f"Falha API autenticacao {respostaHttp.status_code}")
+            erro_msg = f"Falha crítica ao renovar token na RD Station: {resposta.status_code} - {resposta.text}"
+            self.logger.error(erro_msg)
+            raise Exception(erro_msg)
 
     def obterCabecalhos(self) -> Dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.tokenAcesso}",
-            "Accept": "application/json",
-            "Content-Type": "application/json"
-        }
+        return self.headers
 
     def corrigirUrlPaginacao(self, urlOriginal: str) -> str:
         if not urlOriginal:
@@ -114,19 +142,25 @@ class Extract:
         return []
 
     def requisicaoBlindada(self, url: str) -> requests.Response:
-        while True:
-            respostaHttp = self.sessaoHttp.get(url, headers=self.obterCabecalhos())
-            if respostaHttp.status_code == 401:
-                if not self.renovacaoRealizada:
-                    self.renovarTokenAcesso()
-                    continue
-                break
-            if respostaHttp.status_code == 429:
-                tempoEspera = int(respostaHttp.headers.get("Retry-After", 10))
-                time.sleep(tempoEspera)
-                continue
-            self.renovacaoRealizada = False
-            return respostaHttp
+        """
+        Executa a chamada HTTP com tratamento de expiracao de credenciais.
+        Caso retorne status 401, aciona a renovacao e reprocessa a chamada atual com os novos cabecalhos.
+        """
+        resposta = requests.get(url, headers=self.headers)
+        
+        if resposta.status_code == 401:
+            self.logger.warning(f"Token expirado (401) ao tentar acessar {url}. Tentando renovar...")
+            self.renovarTokenAcesso()
+            
+            resposta = requests.get(url, headers=self.headers)
+            
+            if resposta.status_code != 200:
+                raise Exception(f"Requisição falhou mesmo após renovação do token: {resposta.status_code} - {resposta.text}")
+                
+        elif resposta.status_code != 200:
+            raise Exception(f"Erro na requisição da API RD: {resposta.status_code} - {resposta.text}")
+            
+        return resposta
 
     def extrairStages(self) -> List[Dict[str, Any]]:
         todosRegistros = []

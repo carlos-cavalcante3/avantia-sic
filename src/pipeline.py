@@ -27,8 +27,9 @@ class Pipeline:
                 return
             dadosTransformados = self.moduloTransformacao.transformarDados(dadosBrutos, nomeRecurso)
             self.moduloCarga.carregarDados(dadosTransformados, nomeRecurso)
-        except Exception as erroProcessamento:
-            self.logger.error(f"Erro {nomeRecurso}: {str(erroProcessamento)}", exc_info=True)
+        except Exception as e:
+            self.logger.error(f"Erro crítico ao processar o recurso '{nomeRecurso}': {str(e)}")
+            raise
 
     def executarPipeline(self) -> None:
         for recursoAtual in self.listaRecursos:
