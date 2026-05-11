@@ -21,6 +21,7 @@ RD Station CRM V2 (API REST)
 → Processamento Analítico (`schema silver`)  
 → Camada Gold → Materialized Views
 → Frontend próprio no Lovable
+
 ---
 
 ## Project Structure
