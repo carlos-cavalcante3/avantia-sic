@@ -9,3 +9,4 @@ dbt_packages/
 data/
 logs/
 venv/
+.vscode
