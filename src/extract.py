@@ -3,11 +3,12 @@ import time
 import logging
 import requests
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from typing import List, Dict, Any
 from supabase import create_client, Client
+from dateutil.parser import isoparse
 
 class Extract:
     def __init__(self) -> None:
@@ -37,6 +38,8 @@ class Extract:
         self.sessaoHttp = self.criarSessaoResiliente()
         self.renovacaoRealizada = False
 
+        self.validarTokenAntesExecucao()
+
     def criarSessaoResiliente(self) -> requests.Session:
         sessaoResiliente = requests.Session()
         estrategiaTentativas = Retry(
@@ -61,6 +64,33 @@ class Extract:
         except Exception as erroBackup:
             self.logger.error(f"Falha ao gerar arquivo raw: {str(erroBackup)}")
 
+    def validarTokenAntesExecucao(self) -> None:
+        auth_data = (
+            self.clienteSupabase
+            .schema("silver")
+            .table("api_auth")
+            .select("updated_at, expires_in")
+            .eq("id", 1)
+            .single()
+            .execute()
+        )
+
+        if not auth_data.data:
+            return
+
+        updated_at = auth_data.data.get("updated_at")
+        expires_in = auth_data.data.get("expires_in", 3600)
+
+        if not updated_at:
+            return
+
+        dataAtualizacao = isoparse(updated_at)
+        dataExpiracao = dataAtualizacao + timedelta(seconds=expires_in)
+
+        if datetime.now(timezone.utc) >= dataExpiracao - timedelta(minutes=5):
+            self.logger.info("Token próximo da expiração. Renovando...")
+            self.renovarTokenAcesso()
+
     def renovarTokenAcesso(self) -> None:
         """
         Renova as credenciais OAuth2 na API da RD Station utilizando o token de renovacao mais recente
@@ -68,45 +98,84 @@ class Extract:
         """
         self.logger.info("Iniciando renovação do Access Token via Refresh Token...")
         
-        auth_data = self.clienteSupabase.schema("silver").table("api_auth").select("refresh_token").eq("id", 1).execute()
+        auth_data = (
+            self.clienteSupabase
+            .schema("silver")
+            .table("api_auth")
+            .select("*")
+            .eq("id", 1)
+            .single()
+            .execute()
+        )
+    
         if not auth_data.data:
-            raise Exception("Nenhum registro de autenticação encontrado na tabela silver.api_auth (id=1).")
-            
-        refresh_token_atual = auth_data.data[0]["refresh_token"]
-        
+            raise Exception("Registro de autenticação não encontrado.")
+    
+        refresh_token_atual = auth_data.data["refresh_token"]
+    
         payload = {
             "client_id": self.identificadorCliente,
             "client_secret": self.segredoCliente,
             "refresh_token": refresh_token_atual.strip(),
             "grant_type": "refresh_token"
         }
-        
-        headers_auth = {"Content-Type": "application/json"}
-        
-        resposta = requests.post(self.urlAutenticacao, json=payload, headers=headers_auth)
-        
-        if resposta.status_code == 200:
-            novos_tokens = resposta.json()
-            novo_access = novos_tokens["access_token"]
-            novo_refresh = novos_tokens["refresh_token"]
-            
-            self.tokenAcesso = novo_access
-            self.tokenRenovacao = novo_refresh
-            self.headers["Authorization"] = f"Bearer {novo_access}"
-            
-            update_payload = {
-                "access_token": novo_access,
-                "refresh_token": novo_refresh,
-                "updated_at": "now()" 
-            }
-            
-            self.clienteSupabase.schema("silver").table("api_auth").update(update_payload).eq("id", 1).execute()
-            self.logger.info("Token renovado e atualizado no Supabase com sucesso!")
-        else:
-            erro_msg = f"Falha crítica ao renovar token na RD Station: {resposta.status_code} - {resposta.text}"
-            self.logger.error(erro_msg)
-            raise Exception(erro_msg)
-
+    
+        try:
+            resposta = self.sessaoHttp.post(
+                self.urlAutenticacao,
+                json=payload,
+                timeout=30
+            )
+    
+        except Exception as erro:
+            raise Exception(f"Erro HTTP ao renovar token: {str(erro)}")
+    
+        if resposta.status_code != 200:
+            raise Exception(
+                f"Falha ao renovar token: "
+                f"{resposta.status_code} - {resposta.text}"
+            )
+    
+        dados = resposta.json()
+    
+        novo_access = dados.get("access_token")
+    
+        if not novo_access:
+            raise Exception("RD não retornou access_token.")
+    
+        novo_refresh = dados.get(
+            "refresh_token",
+            refresh_token_atual
+        )
+    
+        expires_in = dados.get("expires_in", 3600)
+    
+        self.tokenAcesso = novo_access
+        self.tokenRenovacao = novo_refresh
+    
+        self.headers["Authorization"] = f"Bearer {novo_access}"
+    
+        update_payload = {
+            "access_token": novo_access,
+            "refresh_token": novo_refresh,
+            "expires_in": expires_in,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+    
+        resultado = (
+            self.clienteSupabase
+            .schema("silver")
+            .table("api_auth")
+            .update(update_payload)
+            .eq("id", 1)
+            .execute()
+        )
+    
+        if not resultado.data:
+            raise Exception("Falha ao atualizar tokens no Supabase.")
+    
+        self.logger.info("Tokens atualizados com sucesso.")
+    
     def obterCabecalhos(self) -> Dict[str, str]:
         return self.headers
 
@@ -146,13 +215,21 @@ class Extract:
         Executa a chamada HTTP com tratamento de expiracao de credenciais.
         Caso retorne status 401, aciona a renovacao e reprocessa a chamada atual com os novos cabecalhos.
         """
-        resposta = requests.get(url, headers=self.headers)
+        resposta = self.sessaoHttp.get(
+            url,
+            headers=self.headers,
+            timeout=30
+        )
         
-        if resposta.status_code == 401:
+        if resposta.status_code in [401, 403]:
             self.logger.warning(f"Token expirado (401) ao tentar acessar {url}. Tentando renovar...")
             self.renovarTokenAcesso()
             
-            resposta = requests.get(url, headers=self.headers)
+            resposta = self.sessaoHttp.get(
+                url,
+                headers=self.headers,
+                timeout=30
+            )
             
             if resposta.status_code != 200:
                 raise Exception(f"Requisição falhou mesmo após renovação do token: {resposta.status_code} - {resposta.text}")
@@ -197,7 +274,7 @@ class Extract:
                 break
             urlsVisitadas.add(urlRequisicao)
             respostaHttp = self.requisicaoBlindada(urlRequisicao)
-            if respostaHttp.status_code in [401, 403, 404]:
+            if respostaHttp.status_code == 404:
                 break
             respostaHttp.raise_for_status()
             cargaDados = respostaHttp.json()
