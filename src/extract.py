@@ -92,10 +92,6 @@ class Extract:
             self.renovarTokenAcesso()
 
     def renovarTokenAcesso(self) -> None:
-        """
-        Renova as credenciais OAuth2 na API da RD Station utilizando o token de renovacao mais recente
-        e atualiza o armazenamento no Supabase e os cabecalhos em memoria.
-        """
         self.logger.info("Iniciando renovação do Access Token via Refresh Token...")
         
         auth_data = (
@@ -126,55 +122,49 @@ class Extract:
                 json=payload,
                 timeout=30
             )
-    
         except Exception as erro:
             raise Exception(f"Erro HTTP ao renovar token: {str(erro)}")
     
-        if resposta.status_code != 200:
-            raise Exception(
-                f"Falha ao renovar token: "
-                f"{resposta.status_code} - {resposta.text}"
-            )
-    
-        dados = resposta.json()
-    
-        novo_access = dados.get("access_token")
-    
-        if not novo_access:
-            raise Exception("RD não retornou access_token.")
-    
-        novo_refresh = dados.get(
-            "refresh_token",
-            refresh_token_atual
-        )
-    
-        expires_in = dados.get("expires_in", 3600)
-    
-        self.tokenAcesso = novo_access
-        self.tokenRenovacao = novo_refresh
-    
-        self.headers["Authorization"] = f"Bearer {novo_access}"
-    
-        update_payload = {
-            "access_token": novo_access,
-            "refresh_token": novo_refresh,
-            "expires_in": expires_in,
-            "updated_at": datetime.now(timezone.utc).isoformat()
-        }
-    
-        resultado = (
-            self.clienteSupabase
-            .schema("silver")
-            .table("api_auth")
-            .update(update_payload)
-            .eq("id", 1)
-            .execute()
-        )
-    
-        if not resultado.data:
-            raise Exception("Falha ao atualizar tokens no Supabase.")
-    
-        self.logger.info("Tokens atualizados com sucesso.")
+        if resposta.status_code == 200:
+            dados = resposta.json()
+            novo_access = dados.get("access_token")
+            novo_refresh = dados.get("refresh_token", refresh_token_atual)
+            expires_in = dados.get("expires_in", 3600)
+            
+            if not novo_access:
+                raise Exception("RD não retornou access_token.")
+            
+            update_payload = {
+                "access_token": novo_access,
+                "refresh_token": novo_refresh,
+                "expires_in": expires_in,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }
+            
+            try:
+                resultado = (
+                    self.clienteSupabase
+                    .schema("silver")
+                    .table("api_auth")
+                    .update(update_payload)
+                    .eq("id", 1)
+                    .execute()
+                )
+                if not resultado.data:
+                    raise Exception("Falha silenciosa ao atualizar tokens no Supabase.")
+            except Exception as erroSupabase:
+                raise Exception(f"FALHA CRÍTICA AO SALVAR NOVO TOKEN. O Refresh antigo foi revogado. Intervenção manual necessária: {str(erroSupabase)}")
+            
+            self.tokenAcesso = novo_access
+            self.tokenRenovacao = novo_refresh
+            self.headers["Authorization"] = f"Bearer {novo_access}"
+            
+            self.logger.info("Tokens atualizados e salvos no Supabase com sucesso.")
+            
+        elif resposta.status_code in [400, 401]:
+            raise Exception(f"FALHA IRRECUPERÁVEL AO RENOVAR TOKEN: {resposta.status_code} - {resposta.text}. Refresh Token invalidado. Necessário gerar novo Authorization Code.")
+        else:
+            raise Exception(f"Falha ao renovar token: {resposta.status_code} - {resposta.text}")
     
     def obterCabecalhos(self) -> Dict[str, str]:
         return self.headers
@@ -211,10 +201,6 @@ class Extract:
         return []
 
     def requisicaoBlindada(self, url: str) -> requests.Response:
-        """
-        Executa a chamada HTTP com tratamento de expiracao de credenciais.
-        Caso retorne status 401, aciona a renovacao e reprocessa a chamada atual com os novos cabecalhos.
-        """
         resposta = self.sessaoHttp.get(
             url,
             headers=self.headers,
