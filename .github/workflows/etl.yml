@@ -1,9 +1,14 @@
+# .github/workflows/etl.yml
 name: Pipeline Diária ETL Avantia
 
 on:
   schedule:
-    - cron: '0 9 * * *'
+    - cron: '0 9,21 * * *'
   workflow_dispatch:
+
+concurrency: 
+  group: etl-rd-station
+  cancel-in-progress: false
 
 jobs:
   run-etl:
