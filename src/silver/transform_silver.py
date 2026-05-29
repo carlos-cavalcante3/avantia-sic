@@ -59,6 +59,11 @@ class TransformSilver:
     def padronizarDataframe(self, tabelaDados):
         tabelaDados.replace(r'^\s*$', np.nan, regex=True, inplace=True)
         tabelaDados.replace({np.nan: None}, inplace=True)
+        
+        for col in tabelaDados.columns:
+            if pd.api.types.is_datetime64_any_dtype(tabelaDados[col]):
+                tabelaDados[col] = tabelaDados[col].dt.strftime('%Y-%m-%d %H:%M:%S').replace({np.nan: None})
+                
         return tabelaDados
 
     def deduplicarInteligente(self, tabelaDados, chave="id"):
@@ -76,6 +81,8 @@ class TransformSilver:
                         registro[chave] = int(float(valor))
                     except (ValueError, TypeError):
                         pass
+                elif isinstance(valor, pd.Timestamp):
+                    registro[chave] = valor.strftime('%Y-%m-%d %H:%M:%S')
         return listaRegistros
 
     def processarContatos(self, dadosBronze):

@@ -62,7 +62,7 @@ class Transform:
         for nomeColuna in tabelaDados.columns:
             if any(palavra in str(nomeColuna).lower() for palavra in palavrasChaveData):
                 try:
-                    tabelaDados[nomeColuna] = pd.to_datetime(tabelaDados[nomeColuna], dayfirst=True, utc=True, errors='coerce')
+                    tabelaDados[nomeColuna] = pd.to_datetime(tabelaDados[nomeColuna], utc=True, errors='coerce')
                     tabelaDados[nomeColuna] = tabelaDados[nomeColuna].dt.strftime('%Y-%m-%dT%H:%M:%SZ').where(pd.notnull(tabelaDados[nomeColuna]), None)
                 except Exception as erroConversao:
                     self.logger.warning(f"Ignorando conversao forcada de data {nomeColuna}: {str(erroConversao)}")

@@ -37,5 +37,4 @@ class Pipeline:
         for recursoAtual in self.listaRecursos:
             self.processarRecurso(recursoAtual)
 
-        self.moduloExtracao.renovarTokenPosCarga()
         self.logger.info("Pipeline finalizada com sucesso.")
