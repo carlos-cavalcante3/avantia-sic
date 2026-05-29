@@ -1,36 +1,39 @@
-name: Pipeline Diária ETL Avantia
-
+name: Pipeline Diária Avantia Dashboards
 on:
   schedule:
+    # Roda duas vezes ao dia: às 06:00 e às 18:00 (Horário de Brasília - BRT).
+    # O servidor do GitHub roda em UTC, portanto somamos 3 horas (09:00 e 21:00 UTC).
     - cron: '0 9,21 * * *'
-  workflow_dispatch:
-
-concurrency: 
-  group: etl-rd-station
-  cancel-in-progress: false
+  
+  # O workflow_dispatch permite que você aperte um botão "Run workflow" 
+  # manualmente no GitHub sempre que quiser testar.
+  workflow_dispatch: 
 
 jobs:
-  run-etl:
+  executar-etl:
+    name: Extração e Carga de Dados
     runs-on: ubuntu-latest
-    
+
     steps:
-      - name: Checkout do código
-        uses: actions/checkout@v5
+      - name: Checkout do Repositório
+        uses: actions/checkout@v4
 
-      - name: Configurar Python
-        uses: actions/setup-python@v6
+      - name: Configurar Python 3.10
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.10'
+          cache: 'pip'
 
-      - name: Instalar dependências
+      - name: Instalar Dependências
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Executar Pipeline ETL
+      - name: Executar Script Principal 
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           RD_CLIENT_ID: ${{ secrets.RD_CLIENT_ID }}
           RD_CLIENT_SECRET: ${{ secrets.RD_CLIENT_SECRET }}
-        run: python run.py
+        run: |
+          python run.py

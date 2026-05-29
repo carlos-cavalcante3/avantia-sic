@@ -31,6 +31,11 @@ class Pipeline:
             self.logger.error(f"Erro crítico ao processar o recurso '{nomeRecurso}': {str(e)}")
             raise
 
-    def executarPipeline(self) -> None:
+    def executarPipeline(self):
+        self.logger.info("A iniciar Pipeline Bronze...")
+        
         for recursoAtual in self.listaRecursos:
             self.processarRecurso(recursoAtual)
+
+        self.moduloExtracao.renovarTokenPosCarga()
+        self.logger.info("Pipeline finalizada com sucesso.")

@@ -4,6 +4,19 @@ import json
 import ast
 import logging
 
+"""
+TransformSilver: Camada de processamento e sanitização de dados da arquitetura Medallion.
+
+Esta classe é responsável pela transição dos dados da camada Bronze (Raw) para a Silver (Curated).
+Seu papel fundamental é garantir a integridade analítica através de:
+1. Normalização de esquemas e padronização de nomenclatura.
+2. Sanitização de valores nulos e tipagem rigorosa (especialmente datas e identificadores).
+3. Deduplicação inteligente baseada em densidade de preenchimento.
+4. Auto-cura de registros críticos (ex: negócios ganhos sem data de fechamento).
+
+Seguindo princípios de OO, cada método é especializado na transformação de uma entidade específica
+da API RD Station, promovendo baixo acoplamento e alta coesão entre os domínios de negócio.
+"""
 class TransformSilver:
     def __init__(self):
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -84,13 +97,76 @@ class TransformSilver:
         tabelaNegocios = pd.DataFrame(dadosBronze)
         if tabelaNegocios.empty:
             return [], []
-        tabelaNegocios.dropna(subset=['id', 'status'], inplace=True)
+            
+        tabelaNegocios.dropna(subset=['id'], inplace=True)
+
+        if 'status' in tabelaNegocios.columns:
+            tabelaNegocios['status'] = tabelaNegocios['status'].astype(str).str.lower().str.strip()
+
+        for col in ['closed_at', 'expected_close_date', 'updated_at']:
+            if col in tabelaNegocios.columns:
+                tabelaNegocios[col] = pd.to_datetime(tabelaNegocios[col], utc=True, errors='coerce')
+
+        if 'closed_at' in tabelaNegocios.columns and 'updated_at' in tabelaNegocios.columns:
+            condicao_won_sem_data = (tabelaNegocios['status'] == 'won') & (tabelaNegocios['closed_at'].isna())
+            tabelaNegocios.loc[condicao_won_sem_data, 'closed_at'] = tabelaNegocios.loc[condicao_won_sem_data, 'updated_at']
+
+        for col in ['closed_at', 'expected_close_date']:
+            if col in tabelaNegocios.columns:
+                tabelaNegocios[col] = tabelaNegocios[col].dt.tz_convert('America/Sao_Paulo').dt.strftime('%Y-%m-%d %H:%M:%S')
+
+        for col in ['total_price', 'one_time_price', 'recurrence_price']:
+            if col in tabelaNegocios.columns:
+                tabelaNegocios[col] = pd.to_numeric(tabelaNegocios[col], errors='coerce').fillna(0.0)
+
+        def extrair_motivo_limpo(valor_bruto):
+            if pd.isna(valor_bruto) or not valor_bruto: return "Não Informado"
+            if isinstance(valor_bruto, str) and '{' in valor_bruto:
+                try: valor_bruto = ast.literal_eval(valor_bruto)
+                except: pass
+            if isinstance(valor_bruto, dict):
+                motivo = valor_bruto.get('motivo-da-perda')
+                return str(motivo).strip() if motivo and str(motivo).strip().lower() != 'none' else "Não Informado"
+            return str(valor_bruto).strip()
+
+        if 'custom_fields_motivo_da_perda' in tabelaNegocios.columns:
+            tabelaNegocios['motivo_da_perda'] = tabelaNegocios['custom_fields_motivo_da_perda'].apply(lambda x: extrair_motivo_limpo(x) if isinstance(x, str) and '{' in x else x)
+        elif 'custom_fields' in tabelaNegocios.columns:
+            tabelaNegocios['motivo_da_perda'] = tabelaNegocios['custom_fields'].apply(extrair_motivo_limpo)
+        else:
+            tabelaNegocios['motivo_da_perda'] = 'Não Informado'
+            
+        tabelaNegocios['motivo_da_perda'] = tabelaNegocios['motivo_da_perda'].fillna('Não Informado').replace(['', 'None', 'nan', 'NaN', 'None.'], 'Não Informado')
+
+        colunasUteis = ['id', 'name', 'status', 'total_price', 'one_time_price', 'recurrence_price', 'expected_close_date', 'closed_at', 'pipeline_id', 'stage_id', 'owner_id', 'organization_id', 'lost_reason_id', 'rating', 'custom_fields_tipo_de_contrato', 'motivo_da_perda', 'created_at', 'updated_at']
+        colunasPresentes = [coluna for coluna in colunasUteis if coluna in tabelaNegocios.columns]
         
-        # Função auxiliar para caso o dado venha como string suja
+        tabelaPadronizada = self.padronizarDataframe(tabelaNegocios[colunasPresentes])
+        tabelaDeduplicada = self.deduplicarInteligente(tabelaPadronizada)
+        
+        listaNegociosLimpos = self.normalizarInteiros(tabelaDeduplicada.to_dict(orient='records'))
+        
+        listaHistorico = []
+        if mapaEtapasAtuais is not None:
+            from datetime import datetime, timezone
+            momentoAtual = datetime.now(timezone.utc).isoformat()
+            for negocio in listaNegociosLimpos:
+                idNegocio = str(negocio.get('id'))
+                etapaNova = str(negocio.get('stage_id'))
+                etapaAntiga = str(mapaEtapasAtuais.get(idNegocio))
+                if etapaAntiga != "None" and etapaAntiga != etapaNova:
+                    listaHistorico.append({
+                        "deal_id": idNegocio,
+                        "old_stage_id": etapaAntiga,
+                        "new_stage_id": etapaNova,
+                        "changed_at": momentoAtual
+                    })
+                    
+        return listaNegociosLimpos, listaHistorico
+        
         def extrair_motivo_limpo(valor_bruto):
             if pd.isna(valor_bruto) or not valor_bruto:
                 return "Não Informado"
-            import ast
             valor_atual = valor_bruto
             if isinstance(valor_atual, str):
                 try:
@@ -99,26 +175,17 @@ class TransformSilver:
                     pass
             if isinstance(valor_atual, dict):
                 motivo = valor_atual.get('motivo-da-perda')
-                if motivo is None or str(motivo).strip() == "" or str(motivo).strip().lower() == 'none':
-                    return "Não Informado"
-                return str(motivo).strip()
+                return str(motivo).strip() if motivo else "Não Informado"
             return str(valor_bruto).strip()
 
-        # A NOVA LÓGICA: Procura a coluna explodida pelo transform.py (Bronze) primeiro
         if 'custom_fields_motivo_da_perda' in tabelaNegocios.columns:
-            tabelaNegocios['motivo_da_perda'] = tabelaNegocios['custom_fields_motivo_da_perda'].apply(
-                lambda x: extrair_motivo_limpo(x) if isinstance(x, str) and '{' in x else x
-            )
+            tabelaNegocios['motivo_da_perda'] = tabelaNegocios['custom_fields_motivo_da_perda'].apply(lambda x: extrair_motivo_limpo(x) if isinstance(x, str) and '{' in x else x)
         elif 'custom_fields' in tabelaNegocios.columns:
             tabelaNegocios['motivo_da_perda'] = tabelaNegocios['custom_fields'].apply(extrair_motivo_limpo)
         else:
             tabelaNegocios['motivo_da_perda'] = 'Não Informado'
 
-        # Limpeza final contra nulos e vazios
-        tabelaNegocios['motivo_da_perda'] = tabelaNegocios['motivo_da_perda'].fillna('Não Informado')
-        tabelaNegocios['motivo_da_perda'] = tabelaNegocios['motivo_da_perda'].replace(
-            ['', 'None', 'nan', 'NaN', 'None.'], 'Não Informado'
-        )
+        tabelaNegocios['motivo_da_perda'] = tabelaNegocios['motivo_da_perda'].replace(['', 'None', 'nan', 'NaN', 'None.'], 'Não Informado')
 
         colunasUteis = ['id', 'name', 'status', 'total_price', 'one_time_price', 'recurrence_price', 'expected_close_date', 'closed_at', 'pipeline_id', 'stage_id', 'owner_id', 'organization_id', 'lost_reason_id', 'rating', 'custom_fields_tipo_de_contrato', 'motivo_da_perda', 'created_at', 'updated_at']
         colunasPresentes = [coluna for coluna in colunasUteis if coluna in tabelaNegocios.columns]
@@ -193,9 +260,7 @@ class TransformSilver:
             return []
         tabelaTasks.dropna(subset=['id'], inplace=True)
         if 'owner_ids' in tabelaTasks.columns:
-            tabelaTasks['owner_ids'] = tabelaTasks['owner_ids'].astype(str).str.replace('"', '')
-            tabelaTasks['owner_ids'] = tabelaTasks['owner_ids'].replace('nan', np.nan)
-            tabelaTasks['owner_ids'] = tabelaTasks['owner_ids'].replace('None', np.nan)
+            tabelaTasks['owner_ids'] = tabelaTasks['owner_ids'].astype(str).str.replace('"', '').replace('nan', np.nan).replace('None', np.nan)
         colunasUteis = ['id', 'name', 'type', 'status', 'deal_id', 'owner_ids', 'due_date', 'completed_at', 'completed_by_id', 'created_by_id', 'description', 'created_at', 'updated_at']
         colunasPresentes = [coluna for coluna in colunasUteis if coluna in tabelaTasks.columns]
         tabelaTasks = tabelaTasks[colunasPresentes]
