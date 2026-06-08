@@ -50,10 +50,13 @@ class LoadSilver:
         
         try:
             for pacote in pacotesEnvio:
-                self.clienteSupabase.schema("silver").table(nomeTabela).upsert(pacote).execute()
-            self.logger.info(f"Transformação bronze layer -> silver layer: {totalRegistros} registros na tabela {nomeTabela}.")
-        except Exception as erroCarga:
-            self.logger.error(f"Falha de integridade ao aplicar upsert na tabela {nomeTabela}: {str(erroCarga)}")
+                #  on_conflict="id" adicionado para garantir UPDATE em vez de INSERT duplicado
+                self.clienteSupabase.schema("silver").table(nomeTabela).upsert(
+                    pacote, 
+                    on_conflict="id"
+                ).execute()
+        except Exception as e:
+            self.logger.error(f"Erro ao carregar dados na camada Silver ({nomeTabela}): {str(e)}")
             raise
 
     def carregarHistoricoDeals(self, dadosHistorico):

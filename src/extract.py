@@ -23,7 +23,6 @@ class Extract:
         self.sessaoHttp = self.criarSessaoResiliente()
         self.renovacaoRealizada = False
         
-        # Fluxo exigido: Carrega os tokens atuais ANTES da extração
         self.carregarCredenciaisDoBanco()
 
     def criarSessaoResiliente(self) -> requests.Session:
@@ -95,14 +94,25 @@ class Extract:
             raise Exception(f"Falha API autenticacao {respostaHttp.status_code}")
 
     def renovarTokenPosCarga(self) -> None:
-        """Garante que a próxima carga do ETL terá um token zerado de 60 minutos."""
         self.logger.info("Carga concluída. Preparando tokens fresquinhos para a execução de amanhã...")
         self.renovarTokenAcesso()
 
     def corrigirUrlPaginacao(self, urlOriginal: str) -> str:
-        if not urlOriginal: return ""
-        urlCorrigida = urlOriginal.replace("api/v2/", "crm/v2/").replace("v2/", "crm/v2/").replace("http://", "https://")
-        return urlCorrigida
+        if not urlOriginal:
+            return ""
+
+        url = urlOriginal.replace("http://", "https://")
+
+        # 🔥 NORMALIZAÇÃO FORÇADA DE BASE CORRETA
+        url = url.replace("/api/v2/", "/crm/v2/")
+        url = url.replace("/crm/crm/", "/crm/")
+
+        # 🔥 GARANTE QUE SEMPRE COMEÇA COM CRM V2
+        if "api.rd.services" in url and "/crm/v2/" not in url:
+            parts = url.split("api.rd.services")
+            url = "https://api.rd.services/crm/v2" + parts[-1]
+
+        return url
 
     def extrairProximaUrl(self, cargaDados: Any) -> str:
         if isinstance(cargaDados, dict):
@@ -115,11 +125,15 @@ class Extract:
         return ""
 
     def extrairDadosJson(self, cargaDados: Any, nomeRecurso: str) -> List[Dict[str, Any]]:
-        if isinstance(cargaDados, list): return cargaDados
+        if isinstance(cargaDados, list):
+            return cargaDados
         if isinstance(cargaDados, dict):
-            if nomeRecurso in cargaDados: return cargaDados[nomeRecurso]
-            if "data" in cargaDados: return cargaDados["data"]
-            if "items" in cargaDados: return cargaDados["items"]
+            if nomeRecurso in cargaDados:
+                return cargaDados[nomeRecurso]
+            if "data" in cargaDados:
+                return cargaDados["data"]
+            if "items" in cargaDados:
+                return cargaDados["items"]
         return []
 
     def _requisicaoBlindada(self, url: str) -> requests.Response:
@@ -143,49 +157,111 @@ class Extract:
             return respostaHttp
 
     def extrairRecurso(self, nomeRecurso: str) -> List[Dict[str, Any]]:
-        if nomeRecurso == "stages":
-            pass 
-            
         self.logger.info(f"Iniciando extração do recurso: {nomeRecurso}")
-        todosRegistros = []
-        urlRequisicao = f"{self.urlBase}/{nomeRecurso}?page[size]=100"
-        possuiMaisPaginas = True
+
+        filtros_api = [""]
+
+        if nomeRecurso == "deals":
+            filtros_api = ["?win=true", "?win=false", ""]
+
+        dadosGlobais = []
         urlsVisitadas = set()
-        paginaAtual = 1
-        
-        while possuiMaisPaginas and urlRequisicao:
-            if urlRequisicao in urlsVisitadas: break
-            urlsVisitadas.add(urlRequisicao)
-            
-            respostaHttp = self._requisicaoBlindada(urlRequisicao)
-            if respostaHttp.status_code in [401, 403, 404]: break
-            respostaHttp.raise_for_status()
-            
-            cargaDados = respostaHttp.json()
-            registrosExtraidos = self.extrairDadosJson(cargaDados, nomeRecurso)
-            
-            if not registrosExtraidos:
-                possuiMaisPaginas = False
-                break
-                
-            todosRegistros.extend(registrosExtraidos)
-            
-            urlProximaOriginal = self.extrairProximaUrl(cargaDados)
-            urlProximaCorrigida = self.corrigirUrlPaginacao(urlProximaOriginal)
-            
-            if urlProximaCorrigida and urlProximaCorrigida != urlRequisicao:
-                urlRequisicao = urlProximaCorrigida
-                paginaAtual += 1
-            else:
-                indicadorMaisPaginas = cargaDados.get("has_more", False)
-                if indicadorMaisPaginas:
-                    paginaAtual += 1
-                    urlRequisicao = f"{self.urlBase}/{nomeRecurso}?page={paginaAtual}"
-                else:
-                    possuiMaisPaginas = False
-            time.sleep(0.5)
-            
-        if todosRegistros:
-            self.salvarArquivoRaw(todosRegistros, nomeRecurso)
-            
-        return todosRegistros
+
+        for filtro in filtros_api:
+
+            paginaAtual = 1
+            baseEndpoint = f"{nomeRecurso}{filtro}"
+            separador = "&" if "?" in baseEndpoint else "?"
+
+            urlRequisicao = (
+                f"{self.urlBase}/"
+                f"{baseEndpoint}"
+                f"{separador}"
+                f"page[number]=1"
+            )
+
+            while urlRequisicao:
+
+                if urlRequisicao in urlsVisitadas:
+                    self.logger.warning(f"Loop evitado: {urlRequisicao}")
+                    break
+
+                urlsVisitadas.add(urlRequisicao)
+
+                self.logger.info(f"Buscando (Pag {paginaAtual}): {urlRequisicao}")
+
+                try:
+                    respostaHttp = self._requisicaoBlindada(urlRequisicao)
+
+                    if respostaHttp.status_code in [401, 403, 404]:
+                        self.logger.warning(f"Extracao interrompida (Status {respostaHttp.status_code})")
+                        break
+
+                    respostaHttp.raise_for_status()
+
+                    cargaDados = respostaHttp.json()
+
+                    registrosExtraidos = self.extrairDadosJson(cargaDados, nomeRecurso)
+
+                    if not registrosExtraidos:
+                        self.logger.info("Sem registros encontrados.")
+                        break
+
+                    dadosGlobais.extend(registrosExtraidos)
+
+                    # -----------------------------
+                    # PAGINAÇÃO SEGURA (CORRIGIDA)
+                    # -----------------------------
+                    urlProxima = self.extrairProximaUrl(cargaDados)
+
+                    if urlProxima:
+                        self.logger.debug(f"Next original: {urlProxima}")
+
+                    urlProxima = self.corrigirUrlPaginacao(urlProxima)
+
+                    if urlProxima:
+                        urlRequisicao = urlProxima
+                        paginaAtual += 1
+                    else:
+                        indicadorMaisPaginas = cargaDados.get("has_more", False)
+
+                        if indicadorMaisPaginas:
+                            paginaAtual += 1
+                            urlRequisicao = (
+                                f"{self.urlBase}/"
+                                f"{baseEndpoint}"
+                                f"{separador}"
+                                f"page[number]={paginaAtual}"
+                            )
+                        else:
+                            break
+
+                    time.sleep(0.5)
+
+                except Exception as e:
+                    try:
+                        self.logger.error(f"""
+ERRO REQUISIÇÃO
+
+URL:
+{urlRequisicao}
+
+STATUS:
+{respostaHttp.status_code}
+
+BODY:
+{respostaHttp.text}
+
+ERRO:
+{str(e)}
+""")
+                    except:
+                        self.logger.error(str(e))
+                    break
+
+        if dadosGlobais:
+            self.salvarArquivoRaw(dadosGlobais, nomeRecurso)
+
+        self.logger.info(f"Total extraido para {nomeRecurso}: {len(dadosGlobais)} registros.")
+
+        return dadosGlobais
