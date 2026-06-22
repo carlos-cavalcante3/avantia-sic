@@ -103,11 +103,11 @@ class Extract:
 
         url = urlOriginal.replace("http://", "https://")
 
-        # 🔥 NORMALIZAÇÃO FORÇADA DE BASE CORRETA
+        
         url = url.replace("/api/v2/", "/crm/v2/")
         url = url.replace("/crm/crm/", "/crm/")
 
-        # 🔥 GARANTE QUE SEMPRE COMEÇA COM CRM V2
+        
         if "api.rd.services" in url and "/crm/v2/" not in url:
             parts = url.split("api.rd.services")
             url = "https://api.rd.services/crm/v2" + parts[-1]
