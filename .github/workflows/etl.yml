@@ -9,6 +9,13 @@ on:
   # manualmente no GitHub sempre que quiser testar.
   workflow_dispatch: 
 
+
+
+concurrency:
+  group: etl-rd-station
+  cancel-in-progress: false
+
+  
 jobs:
   executar-etl:
     name: Extração e Carga de Dados
