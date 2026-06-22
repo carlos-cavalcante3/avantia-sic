@@ -24,6 +24,8 @@ class Extract:
         self.renovacaoRealizada = False
         
         self.carregarCredenciaisDoBanco()
+        
+        self.renovarTokenAcesso()
 
     def criarSessaoResiliente(self) -> requests.Session:
         sessaoResiliente = requests.Session()
@@ -65,33 +67,41 @@ class Extract:
             self.logger.error(f"Falha ao gerar arquivo raw: {str(erroBackup)}")
 
     def renovarTokenAcesso(self) -> None:
-        self.logger.info("Executando geração de novo token...")
+        self.logger.info("Executando geracao proativa de novo token OAuth2...")
         cargaDadosAutenticacao = {
             "client_id": self.identificadorCliente,
             "client_secret": self.segredoCliente,
             "refresh_token": self.tokenRenovacao,
             "grant_type": "refresh_token"
         }
+        
         respostaHttp = self.sessaoHttp.post(self.urlAutenticacao, json=cargaDadosAutenticacao)
         
         if respostaHttp.status_code == 200:
             dadosResposta = respostaHttp.json()
             self.tokenAcesso = dadosResposta.get("access_token")
+            # É crucial salvar o novo refresh_token da cadeia de rotação
             self.tokenRenovacao = dadosResposta.get("refresh_token", self.tokenRenovacao)
             
-            self.clienteSupabase.schema("silver").table("api_auth").update({
+            # Grava na camada Silver
+            resposta_banco = self.clienteSupabase.schema("silver").table("api_auth").update({
                 "access_token": self.tokenAcesso,
                 "refresh_token": self.tokenRenovacao,
                 "expires_in": dadosResposta.get("expires_in", 3600),
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }).eq("id", 1).execute()
             
+            # VALIDAÇÃO DE SEGURANÇA: Evita que o script continue caso a gravação falhe
+            if not resposta_banco.data:
+                raise Exception("CRITICO: O token foi renovado junto a API, mas o Supabase rejeitou o UPDATE na tabela api_auth (possivel falha de permissao ou service_role ausente). O processo foi abortado para proteger a integridade do token atual.")
+            
             self.renovacaoRealizada = True
-            self.logger.info("Tokens renovados e salvos no banco com sucesso.")
+            self.logger.info("Tokens renovados e persistidos no banco de dados com segurança total.")
+            
         elif respostaHttp.status_code in [400, 401]:
-            raise Exception(f"REFRESH_TOKEN INVALIDO {respostaHttp.status_code}. Gere um novo Code na RD.")
+            raise Exception(f"REFRESH_TOKEN INVALIDO ({respostaHttp.status_code}). Gere um novo Code via URL do RD Station, solicite via Postman e insira na tabela manualmente uma ultima vez.")
         else:
-            raise Exception(f"Falha API autenticacao {respostaHttp.status_code}")
+            raise Exception(f"Falha na API de autenticacao: Status {respostaHttp.status_code}")
 
     def renovarTokenPosCarga(self) -> None:
         self.logger.info("Carga concluída. Preparando tokens fresquinhos para a execução de amanhã...")
