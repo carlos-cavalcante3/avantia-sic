@@ -458,3 +458,60 @@ class Extract:
 
         self.logger.info(f"[{recurso}] Extração concluída. {total} registros no total.")
         return dados
+
+    # -----------------------------------------------------------------------
+    # Extração especial: Deals (3 varreduras para cobrir todos os estados)
+    # -----------------------------------------------------------------------
+
+    def extrair_deals(self) -> list:
+        """
+        A API do RD Station, por padrão, oculta negócios fechados (ganhos/perdidos).
+        São necessárias 3 chamadas para cobrir todos os estados:
+          1. Ganhos       (?win=true)
+          2. Perdidos     (?win=false)
+          3. Em aberto    (sem filtro de win)
+
+        Usa um set de IDs para deduplicar caso haja sobreposição.
+        """
+        self.logger.info("[deals] Iniciando extração com 3 varreduras (ganhos/perdidos/abertos).")
+
+        todos_os_deals = {}  # id → deal (deduplicação automática)
+
+        varreduras = [
+            {"win": "true",  "label": "ganhos"},
+            {"win": "false", "label": "perdidos"},
+            {                "label": "abertos"},  # sem filtro de win
+        ]
+
+        for varredura in varreduras:
+            label  = varredura.pop("label")
+            params = varredura  # pode ser {} ou {"win": "true"/"false"}
+            try:
+                registros = self.extrair_recurso(
+                    recurso     = f"deals/{label}",
+                    endpoint    = "/deals",
+                    chave_dados = "deals",
+                    params_extras=params if params else None,
+                )
+                novos = 0
+                for deal in registros:
+                    deal_id = deal.get("id")
+                    if deal_id and deal_id not in todos_os_deals:
+                        todos_os_deals[deal_id] = deal
+                        novos += 1
+                self.logger.info(
+                    f"[deals/{label}] {len(registros)} registros retornados, "
+                    f"{novos} novos (únicos)."
+                )
+            except ExtractionError as e:
+                # Uma varredura falha não cancela as outras
+                self.logger.error(
+                    f"[deals/{label}] Falha nesta varredura: {e}. "
+                    "Continuando com as demais varreduras."
+                )
+
+        resultado = list(todos_os_deals.values())
+        self.logger.info(
+            f"[deals] Extração completa. {len(resultado)} deals únicos no total."
+        )
+        return resultado
