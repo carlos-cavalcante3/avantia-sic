@@ -25,7 +25,7 @@ class ExtractionError(Exception):
 # ---------------------------------------------------------------------------
 
 RD_TOKEN_URL    = "https://api.rd.services/auth/token"
-RD_API_BASE_URL = "https://crm.rdstation.com/api/v1"
+RD_API_BASE_URL = "https://api.rd.services/crm/v2"
 
 # Número máximo de tentativas de renovação de token por execução
 MAX_TOKEN_RENEWAL_ATTEMPTS = 3
@@ -126,6 +126,7 @@ class Extract:
         try:
             resp = (
                 self.supabase
+                .schema("silver")
                 .table("api_auth")
                 .select("access_token, refresh_token")
                 .eq("id", AUTH_ROW_ID)
@@ -154,7 +155,7 @@ class Extract:
         não há como recuperar sem intervenção manual.
         """
         try:
-            self.supabase.table("api_auth").update({
+            self.supabase.schema("silver").table("api_auth").update({
                 "access_token":  access_token,
                 "refresh_token": refresh_token,
             }).eq("id", AUTH_ROW_ID).execute()
@@ -268,7 +269,7 @@ class Extract:
             try:
                 # Tenta setar renovando=True apenas se ainda for False
                 resp = (
-                    self.supabase.table("api_auth")
+                    self.supabase.schema("silver").table("api_auth")
                     .update({"renovando": True})
                     .eq("id", AUTH_ROW_ID)
                     .eq("renovando", False)   # condição: só atualiza se False
@@ -293,7 +294,7 @@ class Extract:
     def _liberar_lock(self) -> None:
         """Libera o lock de renovação."""
         try:
-            self.supabase.table("api_auth").update(
+            self.supabase.schema("silver").table("api_auth").update(
                 {"renovando": False}
             ).eq("id", AUTH_ROW_ID).execute()
             self.logger.debug("Lock de renovação liberado.")
@@ -309,7 +310,11 @@ class Extract:
         if not self._access_token:
             # Primeira requisição — carrega do banco
             self._carregar_tokens_do_supabase()
-        return {"Authorization": self._access_token}
+        return {
+            "Authorization": f"Bearer {self._access_token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
 
     def _requisicao_blindada(
         self,
@@ -358,6 +363,10 @@ class Extract:
                     f"Rate limit persistente em {url} após {tentativa} tentativas."
                 )
             return self._requisicao_blindada(url, params, tentativa + 1, max_tentativas)
+            
+        if resp.status_code in [403, 404]:
+            self.logger.warning(f"Endpoint não encontrado ou acesso negado (Status {resp.status_code}): {url}")
+            return {"__abort": True}
 
         # ---- outros erros HTTP ----
         if not resp.ok:
@@ -372,6 +381,28 @@ class Extract:
             raise ExtractionError(
                 f"Resposta não é JSON válido de {url}: {e} | Body: {resp.text[:200]}"
             ) from e
+
+    def extrairProximaUrl(self, cargaDados: dict) -> str:
+        if isinstance(cargaDados, dict):
+            links = cargaDados.get("links", {})
+            if isinstance(links, dict):
+                link_proximo = links.get("next", "")
+                if isinstance(link_proximo, dict):
+                    return link_proximo.get("href", "")
+                if isinstance(link_proximo, str):
+                    return link_proximo
+        return ""
+
+    def corrigirUrlPaginacao(self, urlOriginal: str) -> str:
+        if not urlOriginal:
+            return ""
+        url = urlOriginal.replace("http://", "https://")
+        url = url.replace("/api/v2/", "/crm/v2/")
+        url = url.replace("/crm/crm/", "/crm/")
+        if "api.rd.services" in url and "/crm/v2/" not in url:
+            parts = url.split("api.rd.services")
+            url = "https://api.rd.services/crm/v2" + parts[-1]
+        return url
 
     # -----------------------------------------------------------------------
     # Extração paginada
@@ -400,64 +431,73 @@ class Extract:
             ExtractionError : se a extração falhar definitivamente.
             TokenError      : se os tokens estiverem irrecuperáveis.
         """
-        url    = f"{RD_API_BASE_URL}{endpoint}"
-        pagina = 1
-        total  = 0
-        dados  = []
-
-        params = {"page": pagina, "limit": 200}
+        filtros = ""
         if params_extras:
-            params.update(params_extras)
+            filtros = "?" + "&".join([f"{k}={v}" for k, v in params_extras.items()])
+        
+        separador = "&" if "?" in filtros else "?"
+        url_requisicao = f"{RD_API_BASE_URL}{endpoint}{filtros}{separador}page[number]=1"
+        
+        pagina_atual = 1
+        dados_globais = []
+        urls_visitadas = set()
 
         self.logger.info(f"[{recurso}] Iniciando extração | params: {params_extras or {}}")
 
-        while True:
-            params["page"] = pagina
+        while url_requisicao:
+            if url_requisicao in urls_visitadas:
+                self.logger.warning(f"Loop evitado: {url_requisicao}")
+                break
+            
+            urls_visitadas.add(url_requisicao)
+            self.logger.info(f"[{recurso}] Buscando (Pag {pagina_atual}): {url_requisicao}")
 
             try:
-                resposta = self._requisicao_blindada(url, params)
+                carga_dados = self._requisicao_blindada(url_requisicao)
             except TokenError:
-                # Erros de token interrompem TODO o pipeline — re-levanta
                 raise
             except ExtractionError as e:
-                # Erros de extração: loga e aborta apenas este recurso
-                self.logger.error(
-                    f"[{recurso}] Falha na página {pagina}: {e}. "
-                    "Abortando extração deste recurso."
-                )
+                self.logger.error(f"[{recurso}] Falha: {e}. Abortando extração deste recurso.")
                 raise
 
-            registros = resposta.get(chave_dados, [])
-            total_api  = resposta.get("total", None)
-
-            if not registros:
-                self.logger.info(
-                    f"[{recurso}] Página {pagina}: sem mais registros. "
-                    f"Total extraído: {total}."
-                )
+            if isinstance(carga_dados, dict) and carga_dados.get("__abort"):
                 break
 
-            dados.extend(registros)
-            total += len(registros)
-
-            self.logger.info(
-                f"[{recurso}] Página {pagina}: {len(registros)} registros "
-                f"(acumulado: {total}{f'/{total_api}' if total_api else ''})."
-            )
-
-            # Verifica se chegamos à última página
-            has_more = resposta.get("has_more", None)
-            if has_more is False:
+            registros_extraidos = []
+            if isinstance(carga_dados, list):
+                registros_extraidos = carga_dados
+            elif isinstance(carga_dados, dict):
+                if chave_dados in carga_dados and carga_dados[chave_dados]:
+                    registros_extraidos = carga_dados[chave_dados]
+                elif "data" in carga_dados and carga_dados["data"]:
+                    registros_extraidos = carga_dados["data"]
+                elif "items" in carga_dados and carga_dados["items"]:
+                    registros_extraidos = carga_dados["items"]
+            
+            if not registros_extraidos:
+                self.logger.info(f"[{recurso}] Página {pagina_atual}: sem mais registros.")
                 break
-            if has_more is None:
-                # Fallback: para se a página veio vazia ou menos que o limit
-                if len(registros) < params["limit"]:
+
+            dados_globais.extend(registros_extraidos)
+
+            url_proxima = self.extrairProximaUrl(carga_dados)
+            url_proxima = self.corrigirUrlPaginacao(url_proxima)
+
+            if url_proxima:
+                url_requisicao = url_proxima
+                pagina_atual += 1
+            else:
+                indicador = carga_dados.get("has_more", False) if isinstance(carga_dados, dict) else False
+                if indicador:
+                    pagina_atual += 1
+                    url_requisicao = f"{RD_API_BASE_URL}{endpoint}{filtros}{separador}page[number]={pagina_atual}"
+                else:
                     break
 
-            pagina += 1
+            time.sleep(0.5)
 
-        self.logger.info(f"[{recurso}] Extração concluída. {total} registros no total.")
-        return dados
+        self.logger.info(f"[{recurso}] Extração concluída. {len(dados_globais)} registros no total.")
+        return dados_globais
 
     # -----------------------------------------------------------------------
     # Extração especial: Deals (3 varreduras para cobrir todos os estados)
@@ -515,3 +555,24 @@ class Extract:
             f"[deals] Extração completa. {len(resultado)} deals únicos no total."
         )
         return resultado
+    
+    # -----------------------------------------------------------------------
+    # Adaptador de Compatibilidade (Bridge para o pipeline.py antigo)
+    # -----------------------------------------------------------------------
+
+    def extrairRecurso(self, nomeRecurso: str) -> list:
+        """
+        Garante a retrocompatibilidade com o pipeline.py original que
+        ainda chama 'extrairRecurso(nomeRecurso)' em camelCase.
+        """
+        # Se for deals, roteia para a função especial que faz as 3 varreduras
+        if nomeRecurso == "deals":
+            return self.extrair_deals()
+        
+        # Para os restantes recursos (contacts, users, pipelines, etc.),
+        # roteia para o método paginado padrão.
+        return self.extrair_recurso(
+            recurso=nomeRecurso,
+            endpoint=f"/{nomeRecurso}",
+            chave_dados=nomeRecurso
+        )
