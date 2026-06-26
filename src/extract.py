@@ -1,4 +1,5 @@
 import os
+import time
 import logging
 import requests
 
@@ -28,6 +29,9 @@ RD_API_BASE_URL = "https://crm.rdstation.com/api/v1"
 
 # Número máximo de tentativas de renovação de token por execução
 MAX_TOKEN_RENEWAL_ATTEMPTS = 3
+
+# Tempo máximo de espera para lock distribuído (segundos)
+LOCK_WAIT_TIMEOUT = 60
 
 # Identificador da linha de auth na tabela api_auth
 AUTH_ROW_ID = 1
@@ -156,6 +160,14 @@ class Extract:
     def _renovar_token(self) -> None:
         """
         Renova o par de tokens via refresh_token.
+
+        Fluxo:
+          1. Adquire lock distribuído no Supabase (previne race condition).
+          2. Relê o token atual do banco (pode ter sido renovado por outra instância).
+          3. Verifica se o access_token em memória ainda é o mesmo do banco —
+             se divergir, outra instância já renovou; apenas atualiza a memória.
+          4. Se for o mesmo, chama o endpoint de renovação.
+          5. Salva atomicamente e libera o lock.
         """
         if self._token_renewal_count >= MAX_TOKEN_RENEWAL_ATTEMPTS:
             raise TokenError(
@@ -168,6 +180,7 @@ class Extract:
             f"(tentativa {self._token_renewal_count + 1}/{MAX_TOKEN_RENEWAL_ATTEMPTS})..."
         )
 
+        lock_adquirido = self._adquirir_lock()
         try:
             # Relê o banco — outra instância pode ter renovado enquanto esperávamos o lock
             token_em_memoria = self._access_token
@@ -224,4 +237,55 @@ class Extract:
             self.logger.info("Token renovado e persistido com sucesso.")
 
         finally:
-            pass
+            if lock_adquirido:
+                self._liberar_lock()
+
+    # -----------------------------------------------------------------------
+    # Lock distribuído (previne race condition entre instâncias paralelas)
+    # -----------------------------------------------------------------------
+
+    def _adquirir_lock(self) -> bool:
+        """
+        Tenta adquirir um lock de renovação de token no Supabase.
+        Aguarda até LOCK_WAIT_TIMEOUT segundos antes de prosseguir sem lock.
+        Retorna True se o lock foi adquirido, False caso contrário.
+
+        Implementação simples via coluna `renovando` na tabela api_auth.
+        Para produção de alta concorrência, substituir por pg_advisory_lock via RPC.
+        """
+        deadline = time.time() + LOCK_WAIT_TIMEOUT
+        while time.time() < deadline:
+            try:
+                # Tenta setar renovando=True apenas se ainda for False
+                resp = (
+                    self.supabase.table("api_auth")
+                    .update({"renovando": True})
+                    .eq("id", AUTH_ROW_ID)
+                    .eq("renovando", False)   # condição: só atualiza se False
+                    .execute()
+                )
+                # Se atualizou alguma linha, adquirimos o lock
+                if resp.data:
+                    self.logger.debug("Lock de renovação adquirido.")
+                    return True
+            except Exception as e:
+                self.logger.warning(f"Erro ao tentar adquirir lock: {e}")
+
+            self.logger.debug("Aguardando lock de renovação ser liberado...")
+            time.sleep(5)
+
+        self.logger.warning(
+            "Timeout ao aguardar lock de renovação. "
+            "Prosseguindo sem lock — verificação de token duplicado está ativa."
+        )
+        return False
+
+    def _liberar_lock(self) -> None:
+        """Libera o lock de renovação."""
+        try:
+            self.supabase.table("api_auth").update(
+                {"renovando": False}
+            ).eq("id", AUTH_ROW_ID).execute()
+            self.logger.debug("Lock de renovação liberado.")
+        except Exception as e:
+            self.logger.warning(f"Falha ao liberar lock (será resolvido no próximo run): {e}")
