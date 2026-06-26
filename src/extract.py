@@ -372,3 +372,89 @@ class Extract:
             raise ExtractionError(
                 f"Resposta não é JSON válido de {url}: {e} | Body: {resp.text[:200]}"
             ) from e
+
+    # -----------------------------------------------------------------------
+    # Extração paginada
+    # -----------------------------------------------------------------------
+
+    def extrair_recurso(
+        self,
+        recurso: str,
+        endpoint: str,
+        chave_dados: str,
+        params_extras: dict = None,
+    ) -> list:
+        """
+        Extrai todos os registros de um endpoint paginado.
+
+        Args:
+            recurso     : Nome legível do recurso (usado nos logs).
+            endpoint    : Path relativo, ex: "/deals", "/contacts".
+            chave_dados : Chave no JSON da resposta que contém a lista, ex: "deals".
+            params_extras : Parâmetros adicionais de filtro (ex: {"win": "true"}).
+
+        Returns:
+            Lista com todos os registros coletados.
+
+        Raises:
+            ExtractionError : se a extração falhar definitivamente.
+            TokenError      : se os tokens estiverem irrecuperáveis.
+        """
+        url    = f"{RD_API_BASE_URL}{endpoint}"
+        pagina = 1
+        total  = 0
+        dados  = []
+
+        params = {"page": pagina, "limit": 200}
+        if params_extras:
+            params.update(params_extras)
+
+        self.logger.info(f"[{recurso}] Iniciando extração | params: {params_extras or {}}")
+
+        while True:
+            params["page"] = pagina
+
+            try:
+                resposta = self._requisicao_blindada(url, params)
+            except TokenError:
+                # Erros de token interrompem TODO o pipeline — re-levanta
+                raise
+            except ExtractionError as e:
+                # Erros de extração: loga e aborta apenas este recurso
+                self.logger.error(
+                    f"[{recurso}] Falha na página {pagina}: {e}. "
+                    "Abortando extração deste recurso."
+                )
+                raise
+
+            registros = resposta.get(chave_dados, [])
+            total_api  = resposta.get("total", None)
+
+            if not registros:
+                self.logger.info(
+                    f"[{recurso}] Página {pagina}: sem mais registros. "
+                    f"Total extraído: {total}."
+                )
+                break
+
+            dados.extend(registros)
+            total += len(registros)
+
+            self.logger.info(
+                f"[{recurso}] Página {pagina}: {len(registros)} registros "
+                f"(acumulado: {total}{f'/{total_api}' if total_api else ''})."
+            )
+
+            # Verifica se chegamos à última página
+            has_more = resposta.get("has_more", None)
+            if has_more is False:
+                break
+            if has_more is None:
+                # Fallback: para se a página veio vazia ou menos que o limit
+                if len(registros) < params["limit"]:
+                    break
+
+            pagina += 1
+
+        self.logger.info(f"[{recurso}] Extração concluída. {total} registros no total.")
+        return dados
