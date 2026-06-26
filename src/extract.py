@@ -2,6 +2,8 @@ import os
 import logging
 import requests
 
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
@@ -55,6 +57,9 @@ class Extract:
         # Contador de renovações nesta execução (evita loop infinito)
         self._token_renewal_count = 0
 
+        # Sessão HTTP com retry automático para erros de rede (5xx)
+        self.session = self._criar_sessao_http()
+
         self.logger.info("Extract inicializado. Token será carregado na primeira requisição.")
 
     # -----------------------------------------------------------------------
@@ -72,6 +77,26 @@ class Extract:
             logger.addHandler(handler)
         logger.setLevel(logging.INFO)
         return logger
+
+    @staticmethod
+    def _criar_sessao_http() -> requests.Session:
+        """
+        Cria sessão com retry automático para falhas de rede (5xx).
+        NÃO faz retry em 401/429 — esses são tratados manualmente
+        para ter controle total sobre o fluxo de tokens.
+        """
+        session = requests.Session()
+        retry = Retry(
+            total=int(os.getenv("HTTP_MAX_RETRIES", "3")),
+            backoff_factor=2,
+            status_forcelist=[500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount("https://", adapter)
+        session.mount("http://",  adapter)
+        return session
 
     # -----------------------------------------------------------------------
     # Gerenciamento de tokens (lazy + atômico)
@@ -164,7 +189,7 @@ class Extract:
                 "refresh_token": self._refresh_token,
                 "grant_type":    "refresh_token",
             }
-            resp = requests.post(RD_TOKEN_URL, json=payload, timeout=30)
+            resp = self.session.post(RD_TOKEN_URL, json=payload, timeout=30)
 
             if resp.status_code == 401:
                 raise TokenError(
