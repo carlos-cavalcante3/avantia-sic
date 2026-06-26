@@ -30,6 +30,9 @@ RD_API_BASE_URL = "https://crm.rdstation.com/api/v1"
 # Número máximo de tentativas de renovação de token por execução
 MAX_TOKEN_RENEWAL_ATTEMPTS = 3
 
+# Back-off base para rate limit (segundos); dobra a cada tentativa
+RATE_LIMIT_BACKOFF_BASE = 30
+
 # Tempo máximo de espera para lock distribuído (segundos)
 LOCK_WAIT_TIMEOUT = 60
 
@@ -39,7 +42,14 @@ AUTH_ROW_ID = 1
 
 class Extract:
     """
-    Responsável por autenticar com a API do RD Station CRM e extrair dados.
+    Responsável por autenticar com a API do RD Station CRM e extrair dados
+    paginados para cada recurso configurado no pipeline.
+
+    Autenticação:
+        - Utiliza OAuth2 com Refresh Token Rotation.
+        - O access_token e refresh_token ficam armazenados em silver.api_auth.
+        - A renovação é LAZY: só ocorre quando a API retorna 401.
+        - Um lock distribuído via Supabase evita corrida entre processos.
     """
 
     def __init__(self, logger: logging.Logger = None):
@@ -289,3 +299,76 @@ class Extract:
             self.logger.debug("Lock de renovação liberado.")
         except Exception as e:
             self.logger.warning(f"Falha ao liberar lock (será resolvido no próximo run): {e}")
+
+    # -----------------------------------------------------------------------
+    # Requisição blindada (lazy refresh + rate limit)
+    # -----------------------------------------------------------------------
+
+    def _headers(self) -> dict:
+        """Retorna os headers de autorização com o token atual em memória."""
+        if not self._access_token:
+            # Primeira requisição — carrega do banco
+            self._carregar_tokens_do_supabase()
+        return {"Authorization": self._access_token}
+
+    def _requisicao_blindada(
+        self,
+        url: str,
+        params: dict = None,
+        tentativa: int = 0,
+        max_tentativas: int = 3,
+    ) -> dict:
+        """
+        Executa uma requisição GET com tratamento de:
+          - 401 Unauthorized → renova token (lazy) e retenta
+          - 429 Too Many Requests → espera com back-off exponencial
+          - Erros de rede → gerenciados pelo retry da sessão HTTP
+
+        Levanta:
+          - TokenError  : quando a renovação falha irrecuperavelmente
+          - ExtractionError : quando o limite de tentativas é atingido
+        """
+        resp = self.session.get(
+            url,
+            headers=self._headers(),
+            params=params,
+            timeout=30,
+        )
+
+        # ---- 401: token expirado ----
+        if resp.status_code == 401:
+            if tentativa >= max_tentativas:
+                raise TokenError(
+                    f"Ainda recebendo 401 após {tentativa} renovações de token. "
+                    "A cadeia de tokens pode estar corrompida."
+                )
+            self.logger.warning(f"401 em {url}. Renovando token...")
+            self._renovar_token()
+            return self._requisicao_blindada(url, params, tentativa + 1, max_tentativas)
+
+        # ---- 429: rate limit ----
+        if resp.status_code == 429:
+            wait = RATE_LIMIT_BACKOFF_BASE * (2 ** tentativa)
+            self.logger.warning(
+                f"429 Rate Limit em {url}. Aguardando {wait}s antes de retentar..."
+            )
+            time.sleep(wait)
+            if tentativa >= max_tentativas:
+                raise ExtractionError(
+                    f"Rate limit persistente em {url} após {tentativa} tentativas."
+                )
+            return self._requisicao_blindada(url, params, tentativa + 1, max_tentativas)
+
+        # ---- outros erros HTTP ----
+        if not resp.ok:
+            raise ExtractionError(
+                f"Erro HTTP {resp.status_code} em {url}: {resp.text[:300]}"
+            )
+
+        # ---- parse JSON ----
+        try:
+            return resp.json()
+        except ValueError as e:
+            raise ExtractionError(
+                f"Resposta não é JSON válido de {url}: {e} | Body: {resp.text[:200]}"
+            ) from e
