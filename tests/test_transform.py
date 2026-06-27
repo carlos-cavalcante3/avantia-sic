@@ -17,6 +17,20 @@ class TransformadorDeDados:
             return False
         return True
 
+    def padronizar_email_cliente(self, email: str) -> str:
+            """
+            Remove espaços extras e converte o e-mail para letras minúsculas.
+            Retorna string vazia caso o e-mail seja inválido.
+            """
+            if not email:
+                return ""
+    
+            email = email.strip().lower()
+    
+            if "@" not in email or "." not in email.split("@")[-1]:
+                return ""
+    
+            return email
 
 class TestTransformadorDeDados(unittest.TestCase):
     
