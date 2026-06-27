@@ -39,21 +39,21 @@ class TestTransformadorDeDados(unittest.TestCase):
         deal_invalido = {"valor": 1500} 
         
         # 2. Act 
-        eh_valido = self.transformador.validar_negocio(deal_invalido)
+        valido = self.transformador.validar_negocio(deal_invalido)
         
         # 3. Assert 
         # expected: Falso, pois não tem ID
-        self.assertFalse(eh_valido)
+        self.assertFalse(valido)
 
     def test_aprovar_negocio_correto(self):
         # 1. Arrange 
         deal_perfeito = {"id": 12345, "valor": 5000}
         
         # 2. Act 
-        eh_valido = self.transformador.validar_negocio(deal_perfeito)
+        valido = self.transformador.validar_negocio(deal_perfeito)
         
         # 3. Assert
-        self.assertTrue(eh_valido)
+        self.assertTrue(valido)
 
 
 if __name__ == '__main__':
