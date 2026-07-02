@@ -3,6 +3,8 @@ import time
 import logging
 import requests
 
+from datetime import datetime, timedelta, timezone
+
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from dotenv import load_dotenv
@@ -36,6 +38,19 @@ RATE_LIMIT_BACKOFF_BASE = 30
 # Tempo máximo de espera para lock distribuído (segundos)
 LOCK_WAIT_TIMEOUT = 60
 
+# Se um lock estiver ativo há mais tempo que isso, é considerado "travado"
+# (ex: runner do GitHub Actions foi cancelado/matou o processo no meio de
+# uma renovação e nunca chegou a chamar _liberar_lock). Nesse caso o lock
+# é forçadamente liberado — sem isso, TODA execução futura ficaria presa
+# esperando um processo que não existe mais.
+LOCK_STALE_SECONDS = 120
+
+# Margem de segurança para renovação PROATIVA: renova o token se faltar
+# menos que isso para expirar, em vez de esperar o 401 acontecer.
+# Importante em CI/CD: a primeira chamada de cada execução não deve
+# "gastar" um round-trip descobrindo que o token já morreu.
+TOKEN_EXPIRY_BUFFER_SECONDS = 300
+
 # Identificador da linha de auth na tabela api_auth
 AUTH_ROW_ID = 1
 
@@ -47,9 +62,18 @@ class Extract:
 
     Autenticação:
         - Utiliza OAuth2 com Refresh Token Rotation.
-        - O access_token e refresh_token ficam armazenados em silver.api_auth.
-        - A renovação é LAZY: só ocorre quando a API retorna 401.
-        - Um lock distribuído via Supabase evita corrida entre processos.
+        - O access_token, refresh_token e expires_at ficam armazenados em
+          silver.api_auth — essa tabela é a ÚNICA fonte de verdade sobre
+          o estado da cadeia de tokens, o que é o que torna esse desenho
+          seguro para rodar em runners efêmeros (GitHub Actions não tem
+          estado entre execuções; o Supabase tem).
+        - A renovação é HÍBRIDA: proativa (checa expires_at antes de cada
+          lote de requisições) + reativa (ainda trata 401 defensivamente,
+          caso o relógio local esteja dessincronizado ou a RD Station
+          revogue o token antes do previsto).
+        - Um lock distribuído via Supabase evita corrida entre processos,
+          com detecção de staleness para não travar automações futuras
+          caso um processo morra no meio da renovação.
     """
 
     def __init__(self, logger: logging.Logger = None):
@@ -67,6 +91,7 @@ class Extract:
         # Tokens são carregados sob demanda (lazy), não no __init__
         self._access_token  = None
         self._refresh_token = None
+        self._expires_at    = None  # datetime tz-aware ou None
 
         # Contador de renovações nesta execução (evita loop infinito)
         self._token_renewal_count = 0
@@ -74,7 +99,7 @@ class Extract:
         # Sessão HTTP com retry automático para erros de rede (5xx)
         self.session = self._criar_sessao_http()
 
-        self.logger.info("Extract inicializado. Token será carregado na primeira requisição.")
+        self.logger.info("Extract inicializado. Token será carregado/validado na primeira requisição.")
 
     # -----------------------------------------------------------------------
     # Configuração
@@ -113,12 +138,22 @@ class Extract:
         return session
 
     # -----------------------------------------------------------------------
-    # Gerenciamento de tokens (lazy + atômico)
+    # Gerenciamento de tokens (lazy + proativo + atômico)
     # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_timestamp(valor) -> "datetime | None":
+        if not valor:
+            return None
+        try:
+            # Supabase retorna ISO 8601; normaliza 'Z' para compatibilidade
+            return datetime.fromisoformat(str(valor).replace("Z", "+00:00"))
+        except ValueError:
+            return None
 
     def _carregar_tokens_do_supabase(self) -> None:
         """
-        Lê o par de tokens mais recente do Supabase.
+        Lê o par de tokens mais recente do Supabase (incluindo expires_at).
         Sempre relê antes de qualquer renovação para garantir
         que está usando o token mais atual (outra instância pode ter
         rotacionado antes desta).
@@ -128,7 +163,7 @@ class Extract:
                 self.supabase
                 .schema("silver")
                 .table("api_auth")
-                .select("access_token, refresh_token")
+                .select("access_token, refresh_token, expires_at")
                 .eq("id", AUTH_ROW_ID)
                 .single()
                 .execute()
@@ -141,25 +176,42 @@ class Extract:
                 )
             self._access_token  = data["access_token"]
             self._refresh_token = data["refresh_token"]
+            self._expires_at    = self._parse_timestamp(data.get("expires_at"))
             self.logger.info("Tokens carregados do Supabase com sucesso.")
         except TokenError:
             raise
         except Exception as e:
             raise TokenError(f"Falha ao ler tokens do Supabase: {e}") from e
 
-    def _salvar_tokens_no_supabase(self, access_token: str, refresh_token: str) -> None:
+    def _salvar_tokens_no_supabase(self, access_token: str, refresh_token: str, expires_in: int = None) -> None:
         """
-        Persiste o novo par de tokens de forma atômica.
+        Persiste o novo par de tokens de forma atômica, junto com o
+        timestamp calculado de expiração.
         Se esta operação falhar, levanta TokenError imediatamente —
         pois o token antigo já foi invalidado pela RD Station e
         não há como recuperar sem intervenção manual.
         """
+        expira_em_iso = None
+        if expires_in:
+            expira_em_iso = (
+                datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
+            ).isoformat()
+
         try:
-            self.supabase.schema("silver").table("api_auth").update({
+            payload = {
                 "access_token":  access_token,
                 "refresh_token": refresh_token,
-            }).eq("id", AUTH_ROW_ID).execute()
-            self.logger.info("Novos tokens salvos no Supabase com sucesso.")
+            }
+            if expira_em_iso:
+                payload["expires_at"] = expira_em_iso
+
+            self.supabase.schema("silver").table("api_auth").update(payload).eq(
+                "id", AUTH_ROW_ID
+            ).execute()
+            self.logger.info(
+                f"Novos tokens salvos no Supabase com sucesso."
+                + (f" Expira em {expira_em_iso}." if expira_em_iso else "")
+            )
         except Exception as e:
             # Situação crítica: token novo foi gerado mas não persistido.
             # A cadeia está quebrada — é necessário reautorizar manualmente.
@@ -167,6 +219,42 @@ class Extract:
                 f"[CRÍTICO] Token renovado na RD Station mas FALHOU ao salvar no Supabase. "
                 f"A cadeia de tokens está quebrada. Reautorize manualmente. Erro: {e}"
             ) from e
+
+    def _token_precisa_renovar(self) -> bool:
+        """
+        Determina se o token atual deve ser renovado PROATIVAMENTE,
+        antes de qualquer requisição, com base no expires_at armazenado.
+
+        Se não houver expires_at registrado (ex: primeira execução após
+        a migration, ou token obtido manualmente via Postman), o método
+        retorna False — a renovação reativa (401) continua como rede de
+        segurança nesse caso.
+        """
+        if not self._expires_at:
+            return False
+        limite = self._expires_at - timedelta(seconds=TOKEN_EXPIRY_BUFFER_SECONDS)
+        return datetime.now(timezone.utc) >= limite
+
+    def _garantir_token_valido(self) -> None:
+        """
+        Ponto de entrada único para garantir que há um access_token
+        utilizável antes de qualquer requisição. Deve ser chamado no
+        início de cada execução do pipeline (ver run.py / pipeline.py)
+        e também antes de cada lote de requisições longas.
+
+        Essencial para automação: numa execução via GitHub Actions, o
+        primeiro request do dia não pode depender de um 401 reativo
+        para descobrir que o token expirou durante as horas em que o
+        pipeline ficou ocioso.
+        """
+        if not self._access_token:
+            self._carregar_tokens_do_supabase()
+
+        if self._token_precisa_renovar():
+            self.logger.info(
+                "Token próximo da expiração (ou já expirado) — renovando proativamente."
+            )
+            self._renovar_token()
 
     def _renovar_token(self) -> None:
         """
@@ -178,7 +266,7 @@ class Extract:
           3. Verifica se o access_token em memória ainda é o mesmo do banco —
              se divergir, outra instância já renovou; apenas atualiza a memória.
           4. Se for o mesmo, chama o endpoint de renovação.
-          5. Salva atomicamente e libera o lock.
+          5. Salva atomicamente (incluindo expires_at) e libera o lock.
         """
         if self._token_renewal_count >= MAX_TOKEN_RENEWAL_ATTEMPTS:
             raise TokenError(
@@ -187,7 +275,7 @@ class Extract:
             )
 
         self.logger.warning(
-            f"Token expirado ou inválido. Iniciando renovação "
+            f"Iniciando renovação de token "
             f"(tentativa {self._token_renewal_count + 1}/{MAX_TOKEN_RENEWAL_ATTEMPTS})..."
         )
 
@@ -206,6 +294,13 @@ class Extract:
                 self._token_renewal_count += 1
                 return  # não precisa chamar a API de renovação
 
+            # Se, após reler, o token recém-carregado já está válido por
+            # tempo suficiente, não há necessidade de rotacionar de novo.
+            if self._expires_at and not self._token_precisa_renovar():
+                self.logger.info("Token recarregado do banco já é válido. Renovação desnecessária.")
+                self._token_renewal_count += 1
+                return
+
             # Chama o endpoint de renovação com o refresh_token atual
             payload = {
                 "client_id":     self.client_id,
@@ -220,7 +315,9 @@ class Extract:
                     "REFRESH_TOKEN INVÁLIDO (401). A cadeia de tokens está quebrada. "
                     "Execute o fluxo de autorização inicial: obtenha um novo 'code' "
                     "no navegador, troque por access_token + refresh_token via Postman "
-                    "(grant_type=authorization_code) e insira AMBOS na tabela api_auth."
+                    "(grant_type=authorization_code) e insira AMBOS na tabela api_auth. "
+                    "Isso exige intervenção manual — a automação via GitHub Actions não "
+                    "pode se recuperar sozinha desse estado."
                 )
 
             if not resp.ok:
@@ -229,8 +326,9 @@ class Extract:
                 )
 
             dados = resp.json()
-            novo_access  = dados.get("access_token")
-            novo_refresh = dados.get("refresh_token")
+            novo_access   = dados.get("access_token")
+            novo_refresh  = dados.get("refresh_token")
+            novo_expires  = dados.get("expires_in")
 
             if not novo_access or not novo_refresh:
                 raise TokenError(
@@ -238,11 +336,15 @@ class Extract:
                 )
 
             # Persiste atomicamente (levanta TokenError se falhar)
-            self._salvar_tokens_no_supabase(novo_access, novo_refresh)
+            self._salvar_tokens_no_supabase(novo_access, novo_refresh, novo_expires)
 
             # Atualiza memória
             self._access_token  = novo_access
             self._refresh_token = novo_refresh
+            self._expires_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=int(novo_expires))
+                if novo_expires else None
+            )
             self._token_renewal_count += 1
 
             self.logger.info("Token renovado e persistido com sucesso.")
@@ -252,7 +354,8 @@ class Extract:
                 self._liberar_lock()
 
     # -----------------------------------------------------------------------
-    # Lock distribuído (previne race condition entre instâncias paralelas)
+    # Lock distribuído (previne race condition entre instâncias paralelas,
+    # com detecção de staleness para não travar automações futuras)
     # -----------------------------------------------------------------------
 
     def _adquirir_lock(self) -> bool:
@@ -261,16 +364,23 @@ class Extract:
         Aguarda até LOCK_WAIT_TIMEOUT segundos antes de prosseguir sem lock.
         Retorna True se o lock foi adquirido, False caso contrário.
 
-        Implementação simples via coluna `renovando` na tabela api_auth.
-        Para produção de alta concorrência, substituir por pg_advisory_lock via RPC.
+        Antes de esperar, verifica se um lock existente está "travado"
+        (renovando=True há mais de LOCK_STALE_SECONDS) — cenário típico
+        quando um workflow do GitHub Actions é cancelado ou atinge
+        timeout no meio de uma renovação e nunca chega a liberar o lock.
+        Nesse caso, o lock é forçadamente assumido, em vez de deixar
+        todas as execuções futuras esperando um processo que não existe mais.
         """
+        self._liberar_lock_se_travado()
+
         deadline = time.time() + LOCK_WAIT_TIMEOUT
         while time.time() < deadline:
             try:
+                agora_iso = datetime.now(timezone.utc).isoformat()
                 # Tenta setar renovando=True apenas se ainda for False
                 resp = (
                     self.supabase.schema("silver").table("api_auth")
-                    .update({"renovando": True})
+                    .update({"renovando": True, "renovando_desde": agora_iso})
                     .eq("id", AUTH_ROW_ID)
                     .eq("renovando", False)   # condição: só atualiza se False
                     .execute()
@@ -284,6 +394,7 @@ class Extract:
 
             self.logger.debug("Aguardando lock de renovação ser liberado...")
             time.sleep(5)
+            self._liberar_lock_se_travado()
 
         self.logger.warning(
             "Timeout ao aguardar lock de renovação. "
@@ -291,11 +402,48 @@ class Extract:
         )
         return False
 
+    def _liberar_lock_se_travado(self) -> None:
+        """
+        Verifica se o lock atual está travado (renovando=True há mais
+        tempo que LOCK_STALE_SECONDS) e, se estiver, força a liberação.
+        Protege contra deadlock permanente causado por um runner que
+        morreu no meio de uma renovação.
+        """
+        try:
+            resp = (
+                self.supabase.schema("silver").table("api_auth")
+                .select("renovando, renovando_desde")
+                .eq("id", AUTH_ROW_ID)
+                .single()
+                .execute()
+            )
+            data = resp.data
+            if not data or not data.get("renovando"):
+                return
+
+            renovando_desde = self._parse_timestamp(data.get("renovando_desde"))
+            if not renovando_desde:
+                # Lock antigo sem timestamp (pré-migration) — libera por segurança
+                self.logger.warning("Lock sem 'renovando_desde' registrado — liberando por segurança.")
+                self._liberar_lock()
+                return
+
+            idade_segundos = (datetime.now(timezone.utc) - renovando_desde).total_seconds()
+            if idade_segundos > LOCK_STALE_SECONDS:
+                self.logger.warning(
+                    f"Lock travado detectado (ativo há {idade_segundos:.0f}s, "
+                    f"limite {LOCK_STALE_SECONDS}s). Provavelmente um processo anterior "
+                    "morreu antes de liberar o lock. Forçando liberação."
+                )
+                self._liberar_lock()
+        except Exception as e:
+            self.logger.warning(f"Erro ao checar staleness do lock: {e}")
+
     def _liberar_lock(self) -> None:
         """Libera o lock de renovação."""
         try:
             self.supabase.schema("silver").table("api_auth").update(
-                {"renovando": False}
+                {"renovando": False, "renovando_desde": None}
             ).eq("id", AUTH_ROW_ID).execute()
             self.logger.debug("Lock de renovação liberado.")
         except Exception as e:
@@ -306,10 +454,9 @@ class Extract:
     # -----------------------------------------------------------------------
 
     def _headers(self) -> dict:
-        """Retorna os headers de autorização com o token atual em memória."""
-        if not self._access_token:
-            # Primeira requisição — carrega do banco
-            self._carregar_tokens_do_supabase()
+        """Retorna os headers de autorização, garantindo primeiro que o
+        token em memória é válido (renovação proativa se necessário)."""
+        self._garantir_token_valido()
         return {
             "Authorization": f"Bearer {self._access_token}",
             "Accept": "application/json",
@@ -325,7 +472,7 @@ class Extract:
     ) -> dict:
         """
         Executa uma requisição GET com tratamento de:
-          - 401 Unauthorized → renova token (lazy) e retenta
+          - 401 Unauthorized → renova token (reativo, rede de segurança) e retenta
           - 429 Too Many Requests → espera com back-off exponencial
           - Erros de rede → gerenciados pelo retry da sessão HTTP
 
@@ -340,7 +487,8 @@ class Extract:
             timeout=30,
         )
 
-        # ---- 401: token expirado ----
+        # ---- 401: token expirado (rede de segurança; a via proativa
+        #           deveria ter evitado isso na maioria dos casos) ----
         if resp.status_code == 401:
             if tentativa >= max_tentativas:
                 raise TokenError(
@@ -363,7 +511,7 @@ class Extract:
                     f"Rate limit persistente em {url} após {tentativa} tentativas."
                 )
             return self._requisicao_blindada(url, params, tentativa + 1, max_tentativas)
-            
+
         if resp.status_code in [403, 404]:
             self.logger.warning(f"Endpoint não encontrado ou acesso negado (Status {resp.status_code}): {url}")
             return {"__abort": True}
@@ -434,10 +582,10 @@ class Extract:
         filtros = ""
         if params_extras:
             filtros = "?" + "&".join([f"{k}={v}" for k, v in params_extras.items()])
-        
+
         separador = "&" if "?" in filtros else "?"
         url_requisicao = f"{RD_API_BASE_URL}{endpoint}{filtros}{separador}page[number]=1"
-        
+
         pagina_atual = 1
         dados_globais = []
         urls_visitadas = set()
@@ -448,7 +596,7 @@ class Extract:
             if url_requisicao in urls_visitadas:
                 self.logger.warning(f"Loop evitado: {url_requisicao}")
                 break
-            
+
             urls_visitadas.add(url_requisicao)
             self.logger.info(f"[{recurso}] Buscando (Pag {pagina_atual}): {url_requisicao}")
 
@@ -473,7 +621,7 @@ class Extract:
                     registros_extraidos = carga_dados["data"]
                 elif "items" in carga_dados and carga_dados["items"]:
                     registros_extraidos = carga_dados["items"]
-            
+
             if not registros_extraidos:
                 self.logger.info(f"[{recurso}] Página {pagina_atual}: sem mais registros.")
                 break
@@ -555,7 +703,7 @@ class Extract:
             f"[deals] Extração completa. {len(resultado)} deals únicos no total."
         )
         return resultado
-    
+
     # -----------------------------------------------------------------------
     # Adaptador de Compatibilidade (Bridge para o pipeline.py antigo)
     # -----------------------------------------------------------------------
@@ -568,7 +716,7 @@ class Extract:
         # Se for deals, roteia para a função especial que faz as 3 varreduras
         if nomeRecurso == "deals":
             return self.extrair_deals()
-        
+
         # Para os restantes recursos (contacts, users, pipelines, etc.),
         # roteia para o método paginado padrão.
         return self.extrair_recurso(
