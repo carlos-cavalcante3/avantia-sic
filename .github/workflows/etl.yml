@@ -1,46 +1,45 @@
-name: Pipeline Diária Avantia Dashboards
+name: RD Station CRM ETL
+
 on:
   schedule:
-    # Roda duas vezes ao dia: às 06:00 e às 18:00 (Horário de Brasília - BRT).
-    # O servidor do GitHub roda em UTC, portanto somamos 3 horas (09:00 e 21:00 UTC).
-    - cron: '0 9,21 * * *'
-  
-  # O workflow_dispatch permite que você aperte um botão "Run workflow" 
-  # manualmente no GitHub sempre que quiser testar.
-  workflow_dispatch: 
+    # Ajuste a frequência conforme o volume de dados e o rate limit da RD Station.
+    # Exemplo: a cada 3 horas.
+    - cron: '0 */3 * * *'
+  workflow_dispatch: {}   # permite disparo manual pela interface do GitHub
 
-
-
+# Impede que duas execuções rodem em paralelo (agendada + manual, por exemplo).
+# 'cancel-in-progress: false' faz o GitHub ENFILEIRAR a nova execução em vez
+# de cancelar a que já está rodando — evita que uma renovação de token seja
+# interrompida no meio. Isso é uma segunda camada de proteção, além do lock
+# distribuído já implementado no Supabase (silver.api_auth.renovando).
 concurrency:
-  group: etl-rd-station
+  group: rd-station-etl
   cancel-in-progress: false
 
-  
 jobs:
-  executar-etl:
-    name: Extração e Carga de Dados
+  etl:
     runs-on: ubuntu-latest
+    # Limite de tempo explícito: se o job travar (ex: loop de paginação),
+    # falha de forma visível em vez de consumir o orçamento de minutos
+    # do GitHub Actions silenciosamente.
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout do Repositório
+      - name: Checkout do repositório
         uses: actions/checkout@v4
 
-      - name: Configurar Python 3.10
+      - name: Configurar Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-          cache: 'pip'
+          python-version: '3.11'
 
-      - name: Instalar Dependências
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
 
-      - name: Executar Script Principal 
+      - name: Executar pipeline RD Station → Supabase
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           RD_CLIENT_ID: ${{ secrets.RD_CLIENT_ID }}
           RD_CLIENT_SECRET: ${{ secrets.RD_CLIENT_SECRET }}
-        run: |
-          python run.py
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python run.py
