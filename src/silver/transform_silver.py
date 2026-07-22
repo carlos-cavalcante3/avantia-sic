@@ -59,11 +59,11 @@ class TransformSilver:
     def padronizarDataframe(self, tabelaDados):
         tabelaDados.replace(r'^\s*$', np.nan, regex=True, inplace=True)
         tabelaDados.replace({np.nan: None}, inplace=True)
-        
+
         for col in tabelaDados.columns:
             if pd.api.types.is_datetime64_any_dtype(tabelaDados[col]):
                 tabelaDados[col] = tabelaDados[col].dt.strftime('%Y-%m-%d %H:%M:%S').replace({np.nan: None})
-                
+
         return tabelaDados
 
     def deduplicarInteligente(self, tabelaDados, chave="id"):
@@ -104,7 +104,7 @@ class TransformSilver:
         tabelaNegocios = pd.DataFrame(dadosBronze)
         if tabelaNegocios.empty:
             return [], []
-            
+
         tabelaNegocios.dropna(subset=['id'], inplace=True)
 
         if 'status' in tabelaNegocios.columns:
@@ -142,17 +142,24 @@ class TransformSilver:
             tabelaNegocios['motivo_da_perda'] = tabelaNegocios['custom_fields'].apply(extrair_motivo_limpo)
         else:
             tabelaNegocios['motivo_da_perda'] = 'Não Informado'
-            
+
         tabelaNegocios['motivo_da_perda'] = tabelaNegocios['motivo_da_perda'].fillna('Não Informado').replace(['', 'None', 'nan', 'NaN', 'None.'], 'Não Informado')
 
-        colunasUteis = ['id', 'name', 'status', 'total_price', 'one_time_price', 'recurrence_price', 'expected_close_date', 'closed_at', 'pipeline_id', 'stage_id', 'owner_id', 'organization_id', 'lost_reason_id', 'rating', 'custom_fields_tipo_de_contrato', 'motivo_da_perda', 'created_at', 'updated_at']
+        # === INCLUSÃO DA NOVA COLUNA ===
+        colunasUteis = ['id', 'name', 'status', 'total_price', 'one_time_price', 'recurrence_price', 'expected_close_date', 'closed_at', 'pipeline_id', 'stage_id', 'owner_id', 'organization_id', 'lost_reason_id', 'rating', 'custom_fields_tipo_de_contrato', 'motivo_da_perda', 'custom_fields_proposta_entregue_ao_cliente', 'created_at', 'updated_at']
         colunasPresentes = [coluna for coluna in colunasUteis if coluna in tabelaNegocios.columns]
-        
-        tabelaPadronizada = self.padronizarDataframe(tabelaNegocios[colunasPresentes])
+
+        tabelaFiltrada = tabelaNegocios[colunasPresentes]
+
+        # === RENOMEANDO A COLUNA PARA A CAMADA SILVER ===
+        if 'custom_fields_proposta_entregue_ao_cliente' in tabelaFiltrada.columns:
+            tabelaFiltrada = tabelaFiltrada.rename(columns={'custom_fields_proposta_entregue_ao_cliente': 'proposta_entregue_ao_cliente'})
+
+        tabelaPadronizada = self.padronizarDataframe(tabelaFiltrada)
         tabelaDeduplicada = self.deduplicarInteligente(tabelaPadronizada)
-        
+
         listaNegociosLimpos = self.normalizarInteiros(tabelaDeduplicada.to_dict(orient='records'))
-        
+
         listaHistorico = []
         if mapaEtapasAtuais is not None:
             from datetime import datetime, timezone
@@ -168,56 +175,7 @@ class TransformSilver:
                         "new_stage_id": etapaNova,
                         "changed_at": momentoAtual
                     })
-                    
-        return listaNegociosLimpos, listaHistorico
-        
-        def extrair_motivo_limpo(valor_bruto):
-            if pd.isna(valor_bruto) or not valor_bruto:
-                return "Não Informado"
-            valor_atual = valor_bruto
-            if isinstance(valor_atual, str):
-                try:
-                    valor_atual = ast.literal_eval(valor_atual)
-                except Exception:
-                    pass
-            if isinstance(valor_atual, dict):
-                motivo = valor_atual.get('motivo-da-perda')
-                return str(motivo).strip() if motivo else "Não Informado"
-            return str(valor_bruto).strip()
 
-        if 'custom_fields_motivo_da_perda' in tabelaNegocios.columns:
-            tabelaNegocios['motivo_da_perda'] = tabelaNegocios['custom_fields_motivo_da_perda'].apply(lambda x: extrair_motivo_limpo(x) if isinstance(x, str) and '{' in x else x)
-        elif 'custom_fields' in tabelaNegocios.columns:
-            tabelaNegocios['motivo_da_perda'] = tabelaNegocios['custom_fields'].apply(extrair_motivo_limpo)
-        else:
-            tabelaNegocios['motivo_da_perda'] = 'Não Informado'
-
-        tabelaNegocios['motivo_da_perda'] = tabelaNegocios['motivo_da_perda'].replace(['', 'None', 'nan', 'NaN', 'None.'], 'Não Informado')
-
-        colunasUteis = ['id', 'name', 'status', 'total_price', 'one_time_price', 'recurrence_price', 'expected_close_date', 'closed_at', 'pipeline_id', 'stage_id', 'owner_id', 'organization_id', 'lost_reason_id', 'rating', 'custom_fields_tipo_de_contrato', 'motivo_da_perda', 'created_at', 'updated_at']
-        colunasPresentes = [coluna for coluna in colunasUteis if coluna in tabelaNegocios.columns]
-        tabelaNegocios = tabelaNegocios[colunasPresentes]
-        
-        tabelaPadronizada = self.padronizarDataframe(tabelaNegocios)
-        tabelaDeduplicada = self.deduplicarInteligente(tabelaPadronizada)
-        listaDicionarios = tabelaDeduplicada.to_dict(orient='records')
-        listaNegociosLimpos = self.normalizarInteiros(listaDicionarios)
-        
-        listaHistorico = []
-        if mapaEtapasAtuais is not None:
-            from datetime import datetime, timezone
-            momentoAtual = datetime.now(timezone.utc).isoformat()
-            for negocio in listaNegociosLimpos:
-                idNegocio = str(negocio.get('id'))
-                etapaNova = str(negocio.get('stage_id'))
-                etapaAntiga = str(mapaEtapasAtuais.get(idNegocio))
-                if etapaAntiga != "None" and etapaAntiga != etapaNova:
-                    listaHistorico.append({
-                        "deal_id": idNegocio,
-                        "old_stage_id": etapaAntiga,
-                        "new_stage_id": etapaNova,
-                        "changed_at": momentoAtual
-                    })
         return listaNegociosLimpos, listaHistorico
 
     def processarOrganizacoes(self, dadosBronze):
