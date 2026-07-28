@@ -224,7 +224,7 @@ class TransformSilver:
             "custom_fields_tipo_de_contrato",
             "motivo_da_perda",
             "custom_fields_proposta_entregue_ao_cliente",
-            "data-de-entrega-da-proposta",
+            "custom_fields_data_de_entrega_da_proposta",
             "created_at",
             "updated_at",
         ]
@@ -247,6 +247,12 @@ class TransformSilver:
                     "custom_fields_data_de_entrega_da_proposta": "data_de_entrega_da_proposta"
                 }
             )
+
+        tabelaFiltrada["data_de_entrega_da_proposta"] = pd.to_datetime(
+            tabelaFiltrada["data_de_entrega_da_proposta"],
+            format="%d/%m/%Y",
+            errors="coerce",
+        ).dt.strftime("%Y-%m-%d")
 
         tabelaPadronizada = self.padronizarDataframe(tabelaFiltrada)
         tabelaDeduplicada = self.deduplicarInteligente(tabelaPadronizada)
