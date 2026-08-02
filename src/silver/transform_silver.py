@@ -248,9 +248,9 @@ class TransformSilver:
                 }
             )
 
+            # Substitua o bloco atual por este:
         tabelaFiltrada["data_de_entrega_da_proposta"] = pd.to_datetime(
             tabelaFiltrada["data_de_entrega_da_proposta"],
-            format="%d/%m/%Y",
             errors="coerce",
         ).dt.strftime("%Y-%m-%d")
 
@@ -294,6 +294,7 @@ class TransformSilver:
             "custom_fields_cidade",
             "custom_fields_estado",
             "custom_fields_razao_social",
+            "custom_fields_cnpj",
             "created_at",
             "updated_at",
         ]
@@ -301,6 +302,12 @@ class TransformSilver:
             coluna for coluna in colunasUteis if coluna in tabelaOrganizacoes.columns
         ]
         tabelaOrganizacoes = tabelaOrganizacoes[colunasPresentes]
+
+        if "custom_fields_cnpj" in tabelaOrganizacoes.columns:
+            tabelaOrganizacoes = tabelaOrganizacoes.rename(
+                columns={"custom_fields_cnpj": "cnpj"}
+            )
+
         tabelaPadronizada = self.padronizarDataframe(tabelaOrganizacoes)
         tabelaDeduplicada = self.deduplicarInteligente(tabelaPadronizada)
         listaDicionarios = tabelaDeduplicada.to_dict(orient="records")
