@@ -3,6 +3,8 @@ from src.load import Load
 from src.silver.transform_silver import TransformSilver
 from src.silver.load_silver import LoadSilver
 from src.silver.validation import Validate
+# NOVO: Importando a classe responsável pela carga no schema Privado
+from src.silver.load_privado import LoadPrivado
 
 class PipelineSilver:
     def __init__(self):
@@ -12,6 +14,8 @@ class PipelineSilver:
         self.moduloTransformacao = TransformSilver()
         self.moduloCarga = LoadSilver()
         self.moduloValidacao = Validate()
+        # NOVO: Instanciando o módulo de carga Privado
+        self.moduloCargaPrivado = LoadPrivado()
 
     def lerDadosBronze(self, nomeTabela):
         todosRegistros = []
@@ -35,13 +39,22 @@ class PipelineSilver:
         self.moduloCarga.carregarDados(contatosTransformados, "contacts")
         self.moduloValidacao.validarPerdaDados("contacts")
 
+        # --- PROCESSAMENTO DEALS (MANTENDO BRONZE EM MEMÓRIA PARA AS 2 ROTAS) ---
         mapaEtapasDeals = self.moduloCarga.obterMapeamentoEtapasAtuais()
         dadosNegociosBronze = self.lerDadosBronze("deals")
+
+        # 1. Rota Silver Padrão (Todos os funis)
         negociosTransformados, historicoGerado = self.moduloTransformacao.processarNegocios(dadosNegociosBronze, mapaEtapasDeals)
         self.moduloCarga.carregarDados(negociosTransformados, "deals")
         if historicoGerado:
             self.moduloCarga.carregarHistoricoDeals(historicoGerado)
         self.moduloValidacao.validarPerdaDados("deals")
+
+        # 2. NOVA Rota Privado (Filtro e carga exclusiva)
+        self.logger.info("Iniciando rota de processamento para Funil Privado...")
+        negociosPrivadosTransformados = self.moduloTransformacao.processarNegociosPrivado(dadosNegociosBronze)
+        self.moduloCargaPrivado.carregarDealsPrivado(negociosPrivadosTransformados)
+        # ------------------------------------------------------------------------
 
         dadosOrganizacoesBronze = self.lerDadosBronze("organizations")
         organizacoesTransformadas = self.moduloTransformacao.processarOrganizacoes(dadosOrganizacoesBronze)
@@ -72,6 +85,6 @@ class PipelineSilver:
         usersTransformados = self.moduloTransformacao.processarUsers(dadosUsersBronze)
         self.moduloCarga.carregarDados(usersTransformados, "users")
         self.moduloValidacao.validarPerdaDados("users")
-        
+
         self.moduloCarga.gerarSnapshotDiario()
         self.moduloCarga.atualizarCamadaGold()
