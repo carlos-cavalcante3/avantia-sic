@@ -7,56 +7,57 @@ class LoadSilver:
     def __init__(self):
         self.logger = logging.getLogger(self.__class__.__name__)
         load_dotenv(override=True)
-        
+
         urlBanco = os.environ.get("SUPABASE_URL")
         chaveBanco = os.environ.get("SUPABASE_KEY")
-        
+
         if not urlBanco or not chaveBanco:
             self.logger.critical("Credenciais do Supabase ausentes no arquivo .env")
             raise ValueError("Variaveis SUPABASE_URL e SUPABASE_KEY sao obrigatorias.")
-            
+
         self.clienteSupabase: Client = create_client(urlBanco, chaveBanco)
 
     def obterMapeamentoEtapasAtuais(self):
         mapaEtapas = {}
         tamanhoLote = 1000
         indiceInicio = 0
-        
+
         while True:
             indiceFim = indiceInicio + tamanhoLote - 1
             respostaApi = self.clienteSupabase.schema("silver").table("deals").select("id,stage_id").range(indiceInicio, indiceFim).execute()
             registrosPagina = respostaApi.data
-            
+
             if not registrosPagina:
                 break
-                
+
             for registro in registrosPagina:
                 mapaEtapas[registro['id']] = registro['stage_id']
-                
+
             if len(registrosPagina) < tamanhoLote:
                 break
-                
+
             indiceInicio += tamanhoLote
-            
+
         return mapaEtapas
 
-    def carregarDados(self, dadosTransformados, nomeTabela):
+    # O "pulo do gato": Adicionamos o nomeSchema dinâmico, com "silver" como padrão
+    def carregarDados(self, dadosTransformados, nomeTabela, nomeSchema="silver"):
         if not dadosTransformados:
             return
 
         totalRegistros = len(dadosTransformados)
         tamanhoLote = 500
         pacotesEnvio = [dadosTransformados[i:i + tamanhoLote] for i in range(0, totalRegistros, tamanhoLote)]
-        
+
         try:
             for pacote in pacotesEnvio:
-                #  on_conflict="id" adicionado para garantir UPDATE em vez de INSERT duplicado
-                self.clienteSupabase.schema("silver").table(nomeTabela).upsert(
-                    pacote, 
+                self.clienteSupabase.schema(nomeSchema).table(nomeTabela).upsert(
+                    pacote,
                     on_conflict="id"
                 ).execute()
+            self.logger.info(f"Carga no schema '{nomeSchema}' finalizada para a tabela '{nomeTabela}'.")
         except Exception as e:
-            self.logger.error(f"Erro ao carregar dados na camada Silver ({nomeTabela}): {str(e)}")
+            self.logger.error(f"Erro ao carregar dados na camada {nomeSchema} ({nomeTabela}): {str(e)}")
             raise
 
     def carregarHistoricoDeals(self, dadosHistorico):
@@ -66,7 +67,7 @@ class LoadSilver:
         totalRegistros = len(dadosHistorico)
         tamanhoLote = 500
         pacotesEnvio = [dadosHistorico[i:i + tamanhoLote] for i in range(0, totalRegistros, tamanhoLote)]
-        
+
         try:
             for pacote in pacotesEnvio:
                 self.clienteSupabase.schema("silver").table("deals_historico").insert(pacote).execute()
@@ -84,10 +85,6 @@ class LoadSilver:
             raise
 
     def atualizarCamadaGold(self):
-        """
-        Aciona a rotina interna do banco para atualizar todas as 
-        Materialized Views da camada Gold.
-        """
         try:
             self.clienteSupabase.rpc("atualizar_camada_gold", {}).execute()
             self.logger.info("Camada Gold (Materialized Views) atualizada com sucesso.")

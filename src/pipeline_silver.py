@@ -3,8 +3,6 @@ from src.load import Load
 from src.silver.transform_silver import TransformSilver
 from src.silver.load_silver import LoadSilver
 from src.silver.validation import Validate
-# NOVO: Importando a classe responsável pela carga no schema Privado
-from src.silver.load_privado import LoadPrivado
 
 class PipelineSilver:
     def __init__(self):
@@ -14,8 +12,6 @@ class PipelineSilver:
         self.moduloTransformacao = TransformSilver()
         self.moduloCarga = LoadSilver()
         self.moduloValidacao = Validate()
-        # NOVO: Instanciando o módulo de carga Privado
-        self.moduloCargaPrivado = LoadPrivado()
 
     def lerDadosBronze(self, nomeTabela):
         todosRegistros = []
@@ -39,7 +35,7 @@ class PipelineSilver:
         self.moduloCarga.carregarDados(contatosTransformados, "contacts")
         self.moduloValidacao.validarPerdaDados("contacts")
 
-        # --- PROCESSAMENTO DEALS (MANTENDO BRONZE EM MEMÓRIA PARA AS 2 ROTAS) ---
+        # --- PROCESSAMENTO DEALS (ROTAS SILVER E PRIVADO) ---
         mapaEtapasDeals = self.moduloCarga.obterMapeamentoEtapasAtuais()
         dadosNegociosBronze = self.lerDadosBronze("deals")
 
@@ -50,11 +46,12 @@ class PipelineSilver:
             self.moduloCarga.carregarHistoricoDeals(historicoGerado)
         self.moduloValidacao.validarPerdaDados("deals")
 
-        # 2. NOVA Rota Privado (Filtro e carga exclusiva)
+        # 2. Rota Funil Privado
         self.logger.info("Iniciando rota de processamento para Funil Privado...")
         negociosPrivadosTransformados = self.moduloTransformacao.processarNegociosPrivado(dadosNegociosBronze)
-        self.moduloCargaPrivado.carregarDealsPrivado(negociosPrivadosTransformados)
-        # ------------------------------------------------------------------------
+        # Reutilizamos a classe LoadSilver, apontando para o schema privado
+        self.moduloCarga.carregarDados(negociosPrivadosTransformados, "deals", nomeSchema="privado")
+        # ----------------------------------------------------
 
         dadosOrganizacoesBronze = self.lerDadosBronze("organizations")
         organizacoesTransformadas = self.moduloTransformacao.processarOrganizacoes(dadosOrganizacoesBronze)
