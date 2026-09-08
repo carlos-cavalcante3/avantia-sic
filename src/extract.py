@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -52,15 +53,6 @@ class Extract:
     Os tokens OAuth ficam em silver.api_auth no Supabase. A tabela é a fonte
     única de verdade para permitir execuções locais e GitHub Actions sem
     depender de estado em memória entre execuções.
-
-    Colunas esperadas em silver.api_auth:
-        id
-        access_token
-        refresh_token
-        expires_at
-        renovando
-        renovando_desde
-        updated_at
     """
 
     def __init__(self, logger: Optional[logging.Logger] = None):
@@ -148,12 +140,30 @@ class Extract:
         except (TypeError, ValueError):
             return None
 
+    @staticmethod
+    def _achatar_registro(d: dict, parent_key: str = '', sep: str = '_') -> dict:
+        """
+        Achata estruturas aninhadas para garantir que dados como `custom_fields`
+        (que vêm como listas ou dicionários embutidos) não sejam descartados
+        pela etapa de carga no Supabase.
+        """
+        items = []
+        for k, v in d.items():
+            new_key = f"{parent_key}{sep}{k}" if parent_key else k
+            if isinstance(v, dict):
+                items.extend(Extract._achatar_registro(v, new_key, sep=sep).items())
+            elif isinstance(v, list):
+                # Listas (ex: múltiplos custom fields) viram strings JSON seguras
+                items.append((new_key, json.dumps(v, ensure_ascii=False)))
+            else:
+                items.append((new_key, v))
+        return dict(items)
+
     # -----------------------------------------------------------------------
     # Supabase: tokens e lock distribuído
     # -----------------------------------------------------------------------
 
     def _carregar_tokens_do_supabase(self) -> None:
-        """Carrega o estado mais recente dos tokens da tabela de autenticação."""
         try:
             resposta = (
                 self.supabase.schema(AUTH_SCHEMA)
@@ -195,12 +205,6 @@ class Extract:
         refresh_token: str,
         expires_in: Optional[int],
     ) -> None:
-        """
-        Persiste access token, refresh token e expiração juntos.
-
-        O refresh token pode ser rotacionado pelo RD Station. Portanto, nunca
-        atualize apenas o access_token após uma renovação.
-        """
         try:
             expires_at = None
 
@@ -245,7 +249,6 @@ class Extract:
             ) from erro
 
     def _liberar_lock(self) -> None:
-        """Libera o lock de renovação."""
         try:
             (
                 self.supabase.schema(AUTH_SCHEMA)
@@ -266,7 +269,6 @@ class Extract:
             self.logger.warning(f"Não foi possível liberar o lock de renovação: {erro}")
 
     def _liberar_lock_se_travado(self) -> None:
-        """Libera locks antigos deixados por processos interrompidos."""
         try:
             resposta = (
                 self.supabase.schema(AUTH_SCHEMA)
@@ -303,12 +305,6 @@ class Extract:
             self.logger.warning(f"Falha ao verificar lock travado: {erro}")
 
     def _adquirir_lock(self) -> bool:
-        """
-        Tenta adquirir lock exclusivo de renovação.
-
-        Nunca é seguro renovar sem lock: dois processos usando o mesmo refresh
-        token podem quebrar a cadeia OAuth caso haja rotação de refresh token.
-        """
         self._liberar_lock_se_travado()
 
         limite = time.time() + LOCK_WAIT_TIMEOUT_SECONDS
@@ -352,7 +348,6 @@ class Extract:
     # -----------------------------------------------------------------------
 
     def _token_precisa_renovar(self) -> bool:
-        """Retorna True se o token expirou ou está próximo da expiração."""
         if not self._expires_at:
             return False
 
@@ -361,7 +356,6 @@ class Extract:
         return datetime.now(timezone.utc) >= self._expires_at - margem
 
     def _garantir_token_valido(self) -> None:
-        """Carrega tokens e renova preventivamente quando necessário."""
         if not self._access_token:
             self._carregar_tokens_do_supabase()
 
@@ -373,12 +367,6 @@ class Extract:
             self._renovar_token()
 
     def _renovar_token(self) -> None:
-        """
-        Renova o token com exclusividade.
-
-        Após obter o lock, sempre relê o banco. Isso evita renovar novamente
-        quando outra instância já atualizou os tokens enquanto esta aguardava.
-        """
         if self._token_renewal_count >= MAX_TOKEN_RENEWAL_ATTEMPTS:
             raise TokenError(
                 "Limite de renovações de token atingido nesta execução. "
@@ -516,7 +504,6 @@ class Extract:
         tentativa: int = 0,
         max_tentativas: int = 3,
     ) -> dict:
-        """Executa GET com tratamento de token, rate limit e falhas HTTP."""
         try:
             resposta = self.session.get(
                 url,
@@ -679,7 +666,13 @@ class Extract:
                 )
                 break
 
-            dados_globais.extend(registros)
+            # -----------------------------------------------------------------
+            # NOVO: Aqui os dados (incluindo os custom_fields) são achatados
+            # Isso garante que no retorno do ETL, as listas aninhadas virem strings
+            # e os sub-dicionários virem chaves independentes
+            # -----------------------------------------------------------------
+            registros_tratados = [self._achatar_registro(r) for r in registros]
+            dados_globais.extend(registros_tratados)
 
             proxima_url = self.corrigirUrlPaginacao(self.extrairProximaUrl(carga_dados))
 

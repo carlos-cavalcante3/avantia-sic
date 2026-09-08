@@ -45,19 +45,19 @@ class Transform:
 
     def transformarDados(self, dadosBrutos: List[Dict[str, Any]], nomeRecurso: str) -> List[Dict[str, Any]]:
         self.logger.info(f"Iniciando transformacao para {nomeRecurso}. Registros brutos: {len(dadosBrutos)}")
-        
+
         if not dadosBrutos:
             self.logger.warning(f"Nenhum dado fornecido para transformacao em {nomeRecurso}")
             return []
 
         tabelaDados = self.normalizarDados(dadosBrutos)
-        
+
         for nomeColuna in tabelaDados.columns:
             tabelaDados[nomeColuna] = tabelaDados[nomeColuna].apply(self.limparTiposComplexos)
-        
+
         tabelaDados.replace([np.inf, -np.inf], np.nan, inplace=True)
         tabelaDados = tabelaDados.where(pd.notnull(tabelaDados), None)
-        
+
         palavrasChaveData = ['created_at', 'updated_at', 'closed_at', 'completed_at', 'due_date', 'data_de_', 'data_da_']
         for nomeColuna in tabelaDados.columns:
             if any(palavra in str(nomeColuna).lower() for palavra in palavrasChaveData):
@@ -69,6 +69,6 @@ class Transform:
 
         dadosTransformados = tabelaDados.to_dict(orient='records')
         dadosTransformados = self.sanitizarEstruturasRecursivas(dadosTransformados)
-        
+
         self.logger.info(f"Transformacao validada para {nomeRecurso}. Colecao pronta para insercao.")
         return dadosTransformados

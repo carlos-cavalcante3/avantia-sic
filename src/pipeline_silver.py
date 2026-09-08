@@ -35,13 +35,23 @@ class PipelineSilver:
         self.moduloCarga.carregarDados(contatosTransformados, "contacts")
         self.moduloValidacao.validarPerdaDados("contacts")
 
+        # --- PROCESSAMENTO DEALS (ROTAS SILVER E PRIVADO) ---
         mapaEtapasDeals = self.moduloCarga.obterMapeamentoEtapasAtuais()
         dadosNegociosBronze = self.lerDadosBronze("deals")
+
+        # 1. Rota Silver Padrão (Todos os funis)
         negociosTransformados, historicoGerado = self.moduloTransformacao.processarNegocios(dadosNegociosBronze, mapaEtapasDeals)
         self.moduloCarga.carregarDados(negociosTransformados, "deals")
         if historicoGerado:
             self.moduloCarga.carregarHistoricoDeals(historicoGerado)
         self.moduloValidacao.validarPerdaDados("deals")
+
+        # 2. Rota Funil Privado
+        self.logger.info("Iniciando rota de processamento para Funil Privado...")
+        negociosPrivadosTransformados = self.moduloTransformacao.processarNegociosPrivado(dadosNegociosBronze)
+        # Reutilizamos a classe LoadSilver, apontando para o schema privado
+        self.moduloCarga.carregarDados(negociosPrivadosTransformados, "deals", nomeSchema="privado")
+        # ----------------------------------------------------
 
         dadosOrganizacoesBronze = self.lerDadosBronze("organizations")
         organizacoesTransformadas = self.moduloTransformacao.processarOrganizacoes(dadosOrganizacoesBronze)
@@ -72,6 +82,6 @@ class PipelineSilver:
         usersTransformados = self.moduloTransformacao.processarUsers(dadosUsersBronze)
         self.moduloCarga.carregarDados(usersTransformados, "users")
         self.moduloValidacao.validarPerdaDados("users")
-        
+
         self.moduloCarga.gerarSnapshotDiario()
         self.moduloCarga.atualizarCamadaGold()
