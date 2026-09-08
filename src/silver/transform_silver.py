@@ -6,6 +6,7 @@ import re
 import numpy as np
 import pandas as pd
 
+
 class TransformSilver:
     """
     Camada de processamento e sanitização de dados da arquitetura Medallion.
@@ -16,6 +17,7 @@ class TransformSilver:
     os métodos específicos que moldam os dados tanto para o schema 'silver'
     quanto para o schema 'privado'.
     """
+
     def __init__(self):
         self.logger = logging.getLogger(self.__class__.__name__)
         self.ID_FUNIL_PRIVADO = "68b741e7b98f0b001b5c8d75"
@@ -120,7 +122,7 @@ class TransformSilver:
                 if isinstance(lista, list):
                     return ", ".join([str(item) for item in lista if item])
             except Exception:
-                limpo = re.sub(r'[\[\]"\']', '', valor_str)
+                limpo = re.sub(r'[\[\]"\']', "", valor_str)
                 return limpo.strip()
         return valor_str
 
@@ -140,10 +142,19 @@ class TransformSilver:
             lambda valor: self.extrairChaveJson(valor, "phone")
         )
         colunasUteis = [
-            "id", "name", "job_title", "email_principal", "telefone_principal",
-            "organization_id", "context_origin", "created_at", "updated_at",
+            "id",
+            "name",
+            "job_title",
+            "email_principal",
+            "telefone_principal",
+            "organization_id",
+            "context_origin",
+            "created_at",
+            "updated_at",
         ]
-        colunasPresentes = [col for col in colunasUteis if col in tabelaContatos.columns]
+        colunasPresentes = [
+            col for col in colunasUteis if col in tabelaContatos.columns
+        ]
         tabelaContatos = tabelaContatos[colunasPresentes]
 
         tabelaPadronizada = self.padronizarDataframe(tabelaContatos)
@@ -173,7 +184,10 @@ class TransformSilver:
                     tabelaNegocios[col], utc=True, errors="coerce"
                 )
 
-        if "closed_at" in tabelaNegocios.columns and "updated_at" in tabelaNegocios.columns:
+        if (
+            "closed_at" in tabelaNegocios.columns
+            and "updated_at" in tabelaNegocios.columns
+        ):
             condicao_won_sem_data = (tabelaNegocios["status"] == "won") & (
                 tabelaNegocios["closed_at"].isna()
             )
@@ -197,11 +211,19 @@ class TransformSilver:
 
         # Lógica de extração de motivo de perda padrão do Silver
         if "custom_fields_motivo_da_perda" in tabelaNegocios.columns:
-            tabelaNegocios["motivo_da_perda"] = tabelaNegocios["custom_fields_motivo_da_perda"].apply(
-                lambda x: self.extrair_motivo_limpo(x) if isinstance(x, str) and "{" in x else x
+            tabelaNegocios["motivo_da_perda"] = tabelaNegocios[
+                "custom_fields_motivo_da_perda"
+            ].apply(
+                lambda x: (
+                    self.extrair_motivo_limpo(x)
+                    if isinstance(x, str) and "{" in x
+                    else x
+                )
             )
         elif "custom_fields" in tabelaNegocios.columns:
-            tabelaNegocios["motivo_da_perda"] = tabelaNegocios["custom_fields"].apply(self.extrair_motivo_limpo)
+            tabelaNegocios["motivo_da_perda"] = tabelaNegocios["custom_fields"].apply(
+                self.extrair_motivo_limpo
+            )
         else:
             tabelaNegocios["motivo_da_perda"] = "Não Informado"
 
@@ -212,24 +234,45 @@ class TransformSilver:
         )
 
         colunasUteis = [
-            "id", "name", "status", "total_price", "one_time_price", "recurrence_price",
-            "expected_close_date", "closed_at", "pipeline_id", "stage_id", "owner_id",
-            "organization_id", "lost_reason_id", "rating", "custom_fields_tipo_de_contrato",
-            "motivo_da_perda", "custom_fields_proposta_entregue_ao_cliente",
-            "custom_fields_data_de_entrega_da_proposta", "created_at", "updated_at",
+            "id",
+            "name",
+            "status",
+            "total_price",
+            "one_time_price",
+            "recurrence_price",
+            "expected_close_date",
+            "closed_at",
+            "pipeline_id",
+            "stage_id",
+            "owner_id",
+            "organization_id",
+            "lost_reason_id",
+            "rating",
+            "custom_fields_tipo_de_contrato",
+            "motivo_da_perda",
+            "custom_fields_proposta_entregue_ao_cliente",
+            "custom_fields_data_de_entrega_da_proposta",
+            "created_at",
+            "updated_at",
         ]
 
-        colunasPresentes = [col for col in colunasUteis if col in tabelaNegocios.columns]
+        colunasPresentes = [
+            col for col in colunasUteis if col in tabelaNegocios.columns
+        ]
         tabelaFiltrada = tabelaNegocios[colunasPresentes]
 
         if "custom_fields_proposta_entregue_ao_cliente" in tabelaFiltrada.columns:
             tabelaFiltrada = tabelaFiltrada.rename(
-                columns={"custom_fields_proposta_entregue_ao_cliente": "proposta_entregue_ao_cliente"}
+                columns={
+                    "custom_fields_proposta_entregue_ao_cliente": "proposta_entregue_ao_cliente"
+                }
             )
 
         if "custom_fields_data_de_entrega_da_proposta" in tabelaFiltrada.columns:
             tabelaFiltrada = tabelaFiltrada.rename(
-                columns={"custom_fields_data_de_entrega_da_proposta": "data_de_entrega_da_proposta"}
+                columns={
+                    "custom_fields_data_de_entrega_da_proposta": "data_de_entrega_da_proposta"
+                }
             )
 
         if "data_de_entrega_da_proposta" in tabelaFiltrada.columns:
@@ -247,18 +290,21 @@ class TransformSilver:
         listaHistorico = []
         if mapaEtapasAtuais is not None:
             from datetime import datetime, timezone
+
             momentoAtual = datetime.now(timezone.utc).isoformat()
             for negocio in listaNegociosLimpos:
                 idNegocio = str(negocio.get("id"))
                 etapaNova = str(negocio.get("stage_id"))
                 etapaAntiga = str(mapaEtapasAtuais.get(idNegocio))
                 if etapaAntiga != "None" and etapaAntiga != etapaNova:
-                    listaHistorico.append({
-                        "deal_id": idNegocio,
-                        "old_stage_id": etapaAntiga,
-                        "new_stage_id": etapaNova,
-                        "changed_at": momentoAtual,
-                    })
+                    listaHistorico.append(
+                        {
+                            "deal_id": idNegocio,
+                            "old_stage_id": etapaAntiga,
+                            "new_stage_id": etapaNova,
+                            "changed_at": momentoAtual,
+                        }
+                    )
 
         return listaNegociosLimpos, listaHistorico
 
@@ -279,13 +325,17 @@ class TransformSilver:
 
         # Filtro estrito do funil privado
         if "pipeline_id" in tabelaNegocios.columns:
-            tabelaNegocios = tabelaNegocios[tabelaNegocios["pipeline_id"] == self.ID_FUNIL_PRIVADO]
+            tabelaNegocios = tabelaNegocios[
+                tabelaNegocios["pipeline_id"] == self.ID_FUNIL_PRIVADO
+            ]
 
         if tabelaNegocios.empty:
             return []
 
         # Substitui hífens nos nomes por underscores
-        tabelaNegocios.columns = [col.replace('-', '_') for col in tabelaNegocios.columns]
+        tabelaNegocios.columns = [
+            col.replace("-", "_") for col in tabelaNegocios.columns
+        ]
 
         if "status" in tabelaNegocios.columns:
             tabelaNegocios["status"] = (
@@ -298,7 +348,10 @@ class TransformSilver:
                     tabelaNegocios[col], utc=True, errors="coerce"
                 )
 
-        if "closed_at" in tabelaNegocios.columns and "updated_at" in tabelaNegocios.columns:
+        if (
+            "closed_at" in tabelaNegocios.columns
+            and "updated_at" in tabelaNegocios.columns
+        ):
             condicao_won_sem_data = (tabelaNegocios["status"] == "won") & (
                 tabelaNegocios["closed_at"].isna()
             )
@@ -315,7 +368,9 @@ class TransformSilver:
                 )
 
         if "expected_close_date" in tabelaNegocios.columns:
-            tabelaNegocios["expected_close_date"] = tabelaNegocios["expected_close_date"].dt.strftime("%Y-%m-%d")
+            tabelaNegocios["expected_close_date"] = tabelaNegocios[
+                "expected_close_date"
+            ].dt.strftime("%Y-%m-%d")
 
         for col in ["total_price", "one_time_price", "recurrence_price"]:
             if col in tabelaNegocios.columns:
@@ -324,11 +379,19 @@ class TransformSilver:
                 ).fillna(0.0)
 
         if "custom_fields_motivo_da_perda" in tabelaNegocios.columns:
-            tabelaNegocios["motivo_da_perda"] = tabelaNegocios["custom_fields_motivo_da_perda"].apply(
-                lambda x: self.extrair_motivo_limpo(x) if isinstance(x, str) and "{" in x else x
+            tabelaNegocios["motivo_da_perda"] = tabelaNegocios[
+                "custom_fields_motivo_da_perda"
+            ].apply(
+                lambda x: (
+                    self.extrair_motivo_limpo(x)
+                    if isinstance(x, str) and "{" in x
+                    else x
+                )
             )
         elif "custom_fields" in tabelaNegocios.columns:
-            tabelaNegocios["motivo_da_perda"] = tabelaNegocios["custom_fields"].apply(self.extrair_motivo_limpo)
+            tabelaNegocios["motivo_da_perda"] = tabelaNegocios["custom_fields"].apply(
+                self.extrair_motivo_limpo
+            )
         else:
             tabelaNegocios["motivo_da_perda"] = "Não Informado"
 
@@ -339,37 +402,74 @@ class TransformSilver:
         )
 
         if "custom_fields_proposta_entregue_ao_cliente" in tabelaNegocios.columns:
-            tabelaNegocios = tabelaNegocios.rename(columns={"custom_fields_proposta_entregue_ao_cliente": "proposta_entregue_ao_cliente"})
+            tabelaNegocios = tabelaNegocios.rename(
+                columns={
+                    "custom_fields_proposta_entregue_ao_cliente": "proposta_entregue_ao_cliente"
+                }
+            )
         if "custom_fields_data_de_entrega_da_proposta" in tabelaNegocios.columns:
-            tabelaNegocios = tabelaNegocios.rename(columns={"custom_fields_data_de_entrega_da_proposta": "data_de_entrega_da_proposta"})
+            tabelaNegocios = tabelaNegocios.rename(
+                columns={
+                    "custom_fields_data_de_entrega_da_proposta": "data_de_entrega_da_proposta"
+                }
+            )
         if "data_de_entrega_da_proposta" in tabelaNegocios.columns:
             tabelaNegocios["data_de_entrega_da_proposta"] = pd.to_datetime(
                 tabelaNegocios["data_de_entrega_da_proposta"], errors="coerce"
             ).dt.strftime("%Y-%m-%d")
 
-        colunas_limpeza_array = [col for col in tabelaNegocios.columns if col.startswith("custom_fields_") or col == "proposta_entregue_ao_cliente"]
+        colunas_limpeza_array = [
+            col
+            for col in tabelaNegocios.columns
+            if col.startswith("custom_fields_") or col == "proposta_entregue_ao_cliente"
+        ]
         for col in colunas_limpeza_array:
             tabelaNegocios[col] = tabelaNegocios[col].apply(self.limpar_array_rd)
 
         colunas_homologadas = [
-            "id", "name", "recurrence_price", "one_time_price", "total_price",
-            "expected_close_date", "closed_at", "rating", "status", "pipeline_id",
-            "stage_id", "owner_id", "source_id", "organization_id", "lost_reason_id",
-            "contact_ids", "motivo_da_perda", "proposta_entregue_ao_cliente",
-            "data_de_entrega_da_proposta", "custom_fields_tipo_de_contrato",
-            "custom_fields_descricao", "custom_fields_audio_e_video",
-            "custom_fields_prazo_do_contrato", "custom_fields_margem",
-            "custom_fields_tipo_de_orcamento", "custom_fields_disciplinas_envolvidas",
-            "custom_fields_engenheiro_responsavel", "created_at", "updated_at"
+            "id",
+            "name",
+            "recurrence_price",
+            "one_time_price",
+            "total_price",
+            "expected_close_date",
+            "closed_at",
+            "rating",
+            "status",
+            "pipeline_id",
+            "stage_id",
+            "owner_id",
+            "source_id",
+            "organization_id",
+            "lost_reason_id",
+            "contact_ids",
+            "motivo_da_perda",
+            "proposta_entregue_ao_cliente",
+            "data_de_entrega_da_proposta",
+            "custom_fields_tipo_de_contrato",
+            "custom_fields_descricao",
+            "custom_fields_audio_e_video",
+            "custom_fields_prazo_do_contrato",
+            "custom_fields_margem",
+            "custom_fields_tipo_de_orcamento",
+            "custom_fields_disciplinas_envolvidas",
+            "custom_fields_engenheiro_responsavel",
+            "custom_fields_entrega_ao_gn",
+            "created_at",
+            "updated_at",
         ]
 
-        colunas_presentes = [col for col in colunas_homologadas if col in tabelaNegocios.columns]
+        colunas_presentes = [
+            col for col in colunas_homologadas if col in tabelaNegocios.columns
+        ]
         tabelaFiltrada = tabelaNegocios[colunas_presentes]
 
         tabelaPadronizada = self.padronizarDataframe(tabelaFiltrada)
         tabelaDeduplicada = self.deduplicarInteligente(tabelaPadronizada)
 
-        listaNegociosLimpos = self.normalizarInteiros(tabelaDeduplicada.to_dict(orient="records"))
+        listaNegociosLimpos = self.normalizarInteiros(
+            tabelaDeduplicada.to_dict(orient="records")
+        )
         return listaNegociosLimpos
 
     # =========================================================================
@@ -382,14 +482,25 @@ class TransformSilver:
             return []
         tabelaOrganizacoes.dropna(subset=["id"], inplace=True)
         colunasUteis = [
-            "id", "name", "owner_id", "custom_fields_cidade", "custom_fields_estado",
-            "custom_fields_razao_social", "custom_fields_cnpj", "created_at", "updated_at",
+            "id",
+            "name",
+            "owner_id",
+            "custom_fields_cidade",
+            "custom_fields_estado",
+            "custom_fields_razao_social",
+            "custom_fields_cnpj",
+            "created_at",
+            "updated_at",
         ]
-        colunasPresentes = [col for col in colunasUteis if col in tabelaOrganizacoes.columns]
+        colunasPresentes = [
+            col for col in colunasUteis if col in tabelaOrganizacoes.columns
+        ]
         tabelaOrganizacoes = tabelaOrganizacoes[colunasPresentes]
 
         if "custom_fields_cnpj" in tabelaOrganizacoes.columns:
-            tabelaOrganizacoes = tabelaOrganizacoes.rename(columns={"custom_fields_cnpj": "cnpj"})
+            tabelaOrganizacoes = tabelaOrganizacoes.rename(
+                columns={"custom_fields_cnpj": "cnpj"}
+            )
 
         tabelaPadronizada = self.padronizarDataframe(tabelaOrganizacoes)
         tabelaDeduplicada = self.deduplicarInteligente(tabelaPadronizada)
@@ -402,7 +513,9 @@ class TransformSilver:
             return []
         tabelaPipelines.dropna(subset=["id"], inplace=True)
         colunasUteis = ["id", "name", "created_at", "updated_at"]
-        colunasPresentes = [col for col in colunasUteis if col in tabelaPipelines.columns]
+        colunasPresentes = [
+            col for col in colunasUteis if col in tabelaPipelines.columns
+        ]
         tabelaPipelines = tabelaPipelines[colunasPresentes]
         tabelaPadronizada = self.padronizarDataframe(tabelaPipelines)
         tabelaDeduplicada = self.deduplicarInteligente(tabelaPadronizada)
@@ -416,7 +529,14 @@ class TransformSilver:
         tabelaStages.dropna(subset=["id"], inplace=True)
         if "order" in tabelaStages.columns:
             tabelaStages.rename(columns={"order": "stage_order"}, inplace=True)
-        colunasUteis = ["id", "pipeline_id", "name", "stage_order", "created_at", "updated_at"]
+        colunasUteis = [
+            "id",
+            "pipeline_id",
+            "name",
+            "stage_order",
+            "created_at",
+            "updated_at",
+        ]
         colunasPresentes = [col for col in colunasUteis if col in tabelaStages.columns]
         tabelaStages = tabelaStages[colunasPresentes]
         tabelaPadronizada = self.padronizarDataframe(tabelaStages)
@@ -431,13 +551,26 @@ class TransformSilver:
         tabelaTasks.dropna(subset=["id"], inplace=True)
         if "owner_ids" in tabelaTasks.columns:
             tabelaTasks["owner_ids"] = (
-                tabelaTasks["owner_ids"].astype(str)
-                .str.replace('"', "").replace("nan", np.nan).replace("None", np.nan)
+                tabelaTasks["owner_ids"]
+                .astype(str)
+                .str.replace('"', "")
+                .replace("nan", np.nan)
+                .replace("None", np.nan)
             )
         colunasUteis = [
-            "id", "name", "type", "status", "deal_id", "owner_ids", "due_date",
-            "completed_at", "completed_by_id", "created_by_id", "description",
-            "created_at", "updated_at",
+            "id",
+            "name",
+            "type",
+            "status",
+            "deal_id",
+            "owner_ids",
+            "due_date",
+            "completed_at",
+            "completed_by_id",
+            "created_by_id",
+            "description",
+            "created_at",
+            "updated_at",
         ]
         colunasPresentes = [col for col in colunasUteis if col in tabelaTasks.columns]
         tabelaTasks = tabelaTasks[colunasPresentes]
