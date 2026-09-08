@@ -37,7 +37,7 @@ jobs:
       - name: Registrar execução do ETL
         if: success()
         env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_URL }}
         run: |
-          psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -c \
+          psql "$SUPABASE_URL" -v ON_ERROR_STOP=1 -c \
             "INSERT INTO privado.etl_sync_log (status) VALUES ('sucesso');"
