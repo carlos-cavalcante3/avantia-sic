@@ -2,15 +2,9 @@ name: RD Station CRM ETL
 
 on:
   schedule:
-    # Ajuste a frequência conforme o volume de dados e o rate limit da RD Station.
     - cron: '0 */1 * * *'
-  workflow_dispatch: {}   # permite disparo manual pela interface do GitHub
+  workflow_dispatch: {}
 
-# Impede que duas execuções rodem em paralelo (agendada + manual, por exemplo).
-# 'cancel-in-progress: false' faz o GitHub ENFILEIRAR a nova execução em vez
-# de cancelar a que já está rodando — evita que uma renovação de token seja
-# interrompida no meio. Isso é uma segunda camada de proteção, além do lock
-# distribuído já implementado no Supabase (silver.api_auth.renovando).
 concurrency:
   group: rd-station-etl
   cancel-in-progress: false
@@ -18,9 +12,6 @@ concurrency:
 jobs:
   etl:
     runs-on: ubuntu-latest
-    # Limite de tempo explícito: se o job travar (ex: loop de paginação),
-    # falha de forma visível em vez de consumir o orçamento de minutos
-    # do GitHub Actions silenciosamente.
     timeout-minutes: 30
 
     steps:
@@ -42,3 +33,11 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python run.py
+
+      - name: Registrar execução do ETL
+        if: success()
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -c \
+            "INSERT INTO privado.etl_sync_log (status) VALUES ('sucesso');"
